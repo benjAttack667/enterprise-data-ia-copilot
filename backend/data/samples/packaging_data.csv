@@ -1,0 +1,13 @@
+component_id,supplier,material,recyclability_score,compliance_status,reach_document,agec_document,missing_data_count,last_update,risk_level
+C001,EcoPack,Cardboard,96,Compliant,Yes,Yes,0,2026-07-15,Low
+C002,PlastiForm,PET,72,Pending,Yes,No,1,2026-04-02,Medium
+C003,GreenWrap,Paper,94,Compliant,Yes,Yes,0,2026-07-21,Low
+C004,GlobalResins,PVC,28,Non-compliant,No,No,3,2025-11-10,High
+C005,EcoPack,Aluminium,81,Compliant,Yes,Yes,0,2026-06-18,Low
+C006,FlexiPack,Composite,42,Pending,No,Yes,2,2026-02-05,High
+C007,GreenWrap,Glass,88,Compliant,Yes,Yes,0,2026-07-08,Low
+C008,PlastiForm,HDPE,76,Pending,Yes,No,1,2026-05-14,Medium
+C009,LocalFiber,Wood,91,Compliant,Yes,Yes,0,2026-06-30,Low
+C010,GlobalResins,Polystyrene,19,Non-compliant,No,No,4,2025-08-22,High
+C011,FlexiPack,Bioplastic,67,Pending,Yes,,2,2026-03-19,Medium
+C012,,Cardboard,89,Compliant,Yes,Yes,1,2026-07-01,Medium

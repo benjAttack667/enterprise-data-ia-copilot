@@ -1,0 +1,43 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environnements et secrets
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env.local
+
+# Next.js / Node
+frontend/node_modules/
+frontend/.next/
+frontend/.next-robot/
+frontend/out/
+frontend/npm-debug.log*
+frontend/pnpm-debug.log*
+frontend/public/placeholder*
+
+# Donnees et artefacts generes localement
+backend/data/uploads/*
+!backend/data/uploads/.gitkeep
+backend/reports/*
+!backend/reports/.gitkeep
+backend/data/*.db
+backend/data/*.db-*
+
+# Editeurs et OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Rapports Robot Framework générés localement
+tests/robot/results/
+
+# Autorités locales d'entreprise, jamais versionnées
+docker/certs/*.crt

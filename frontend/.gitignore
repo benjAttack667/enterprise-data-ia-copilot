@@ -1,0 +1,16 @@
+# Environment variables
+.env*
+!.env.example
+
+# Next.js / Node
+node_modules
+.next/
+.next-robot/
+out/
+.vercel/
+npm-debug.log*
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db

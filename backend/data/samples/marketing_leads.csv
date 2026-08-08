@@ -1,0 +1,16 @@
+lead_id,source,campaign,country,created_at,status,score,conversion,revenue,missing_email,duplicate_flag
+L001,LinkedIn,AI Decision Makers,France,2026-01-05,Converted,91,1,12500,0,0
+L002,Google Ads,Data Quality,France,2026-01-11,Qualified,76,0,0,0,0
+L003,Webinar,AI Decision Makers,Belgium,2026-01-18,Converted,88,1,9800,0,0
+L004,Organic,BI Modernisation,France,2026-02-02,New,43,0,0,1,0
+L005,Partner,Data Quality,Switzerland,2026-02-09,Lost,38,0,0,0,0
+L006,Google Ads,BI Modernisation,France,2026-02-14,Converted,82,1,7400,0,0
+L007,LinkedIn,Green Data,Belgium,2026-03-01,Qualified,69,0,0,0,0
+L008,Webinar,Green Data,France,2026-03-06,Converted,94,1,15200,0,0
+L009,Organic,Data Quality,Canada,2026-03-17,New,51,0,0,1,0
+L010,LinkedIn,AI Decision Makers,France,2026-04-03,Converted,87,1,11300,0,0
+L011,Google Ads,Green Data,Germany,2026-04-10,Lost,22,0,0,0,0
+L011,Google Ads,Green Data,Germany,2026-04-10,Lost,22,0,0,0,1
+L012,Partner,BI Modernisation,France,2026-04-22,Qualified,73,0,0,1,0
+L013,Webinar,AI Decision Makers,Spain,2026-05-04,Converted,96,1,18100,0,0
+L014,Organic,Green Data,France,2026-05-12,New,,0,0,1,0
