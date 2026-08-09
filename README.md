@@ -4,9 +4,14 @@ Plateforme SaaS de démonstration qui transforme un fichier CSV ou XLSX en espac
 
 Le projet est une application métier complète, pas un site vitrine. Toutes les valeurs affichées sont calculées par le backend FastAPI à partir du dataset actif.
 
+[Démo en ligne](https://rare-communication-production.up.railway.app) · [CI GitHub Actions](https://github.com/benjAttack667/enterprise-data-ia-copilot/actions)
+
+La démo publique est protégée par un mot de passe partagé. Elle doit être utilisée uniquement avec les datasets synthétiques fournis : ne téléversez aucune donnée personnelle ou confidentielle.
+
 ## Fonctionnalités
 
 - import sécurisé de fichiers CSV et XLSX (50 Mio par défaut, limite configurable) ;
+- accès de démonstration protégé par une session HTTP-only signée et une API FastAPI non exposée directement au navigateur ;
 - profilage Pandas et KPI adaptés aux colonnes disponibles ;
 - score Data Quality explicable, valeurs manquantes, identifiants répétés, doublons signalés, types mixtes et valeurs extrêmes ;
 - dashboard Recharts configurable par dimension, mesure et agrégation ;
@@ -24,6 +29,8 @@ Le projet est une application métier complète, pas un site vitrine. Toutes les
 | Backend | FastAPI, Python, Pandas, NumPy, scikit-learn |
 | IA | OpenAI Responses API avec fallback local |
 | Persistance | SQLite pour l'historique, stockage local des imports et rapports |
+
+Le navigateur communique uniquement avec le proxy same-origin Next.js. Après validation de la session, ce proxy ajoute côté serveur un jeton privé pour joindre FastAPI. Le mot de passe, le secret de session et le jeton backend ne sont jamais intégrés au bundle navigateur.
 
 ## Architecture
 
@@ -92,6 +99,10 @@ npm install
 `backend/.env` :
 
 ```dotenv
+COPILOT_ENVIRONMENT=local
+BACKEND_SERVICE_TOKEN=<jeton-aléatoire-identique-au-frontend>
+API_DOCS_ENABLED=true
+
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 FRONTEND_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
@@ -101,10 +112,15 @@ MAX_UPLOAD_BYTES=52428800
 `frontend/.env.local` :
 
 ```dotenv
-NEXT_PUBLIC_API_URL=http://localhost:8000
+BACKEND_INTERNAL_URL=http://127.0.0.1:8000
+BACKEND_SERVICE_TOKEN=<jeton-aléatoire-identique-au-backend>
+DEMO_ACCESS_PASSWORD=<mot-de-passe-fort>
+SESSION_SECRET=<secret-aléatoire-de-32-octets-minimum>
 ```
 
-La clé OpenAI reste exclusivement côté serveur. Lorsqu'elle est active, seuls le schéma, les métadonnées, les KPI et les statistiques agrégées sont envoyés au modèle — jamais le fichier complet ni ses lignes brutes. L'appel Responses API utilise `store=False`. Sans clé, en cas de timeout, de quota ou de clé invalide, l'interface affiche explicitement le mode local.
+Générez séparément le jeton backend et le secret de session avec `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Utilisez une troisième valeur forte comme mot de passe de démonstration. Ne commitez jamais ces valeurs.
+
+La clé OpenAI reste exclusivement côté serveur. Lorsqu'elle est active, la question utilisateur, le schéma, les métadonnées, les KPI et les statistiques agrégées sont envoyés au modèle — jamais le fichier complet ni ses lignes brutes. L'appel Responses API utilise `store=False`. Sans clé, en cas de timeout, de quota ou de clé invalide, l'interface affiche explicitement le mode local.
 
 ## Exécution avec Docker Compose
 
@@ -113,12 +129,14 @@ Cette option lance le frontend et le backend dans deux conteneurs non privilégi
 ```powershell
 # Depuis la racine
 Copy-Item .\.env.example .\.env
+# Remplissez BACKEND_SERVICE_TOKEN, DEMO_ACCESS_PASSWORD et SESSION_SECRET
+# avec trois secrets différents avant le premier démarrage.
 docker compose up --build -d
 docker compose ps
 ```
 
 - Application : `http://localhost:3000`
-- API et documentation : `http://localhost:8000/docs`
+- Documentation locale, si `API_DOCS_ENABLED=true` : `http://localhost:8000/docs`
 
 Pour suivre les journaux puis arrêter la stack sans supprimer les données :
 
@@ -127,14 +145,38 @@ docker compose logs -f
 docker compose down
 ```
 
-`PUBLIC_API_URL` est intégrée au bundle navigateur pendant le build Next.js. Si le port ou le domaine public du backend change, modifiez cette variable puis relancez `docker compose up --build -d`. La clé OpenAI, elle, est injectée uniquement à l'exécution dans le conteneur FastAPI.
+Les quatre variables de sécurité frontend sont injectées uniquement à l'exécution dans le serveur Next.js. Aucune variable `NEXT_PUBLIC_*` ne contient un secret. Dans Docker Compose, Next.js contacte FastAPI sur le réseau interne via `http://backend:8000`.
 
 Si le réseau d'entreprise inspecte les connexions TLS, placez uniquement ses certificats d'autorité racine publics au format PEM (`.crt`) dans `docker/certs/` avant le build. Ils sont ignorés par Git ; aucune clé privée ne doit être copiée dans ce dossier. La vérification TLS reste active.
+
+## Déploiement Railway sécurisé
+
+Configurez les variables suivantes avant de déployer cette version. La présence de `RAILWAY_PROJECT_ID` place automatiquement le backend en mode production ; il refuse volontairement de démarrer si son jeton est absent ou fait moins de 32 octets.
+
+Service backend :
+
+```dotenv
+COPILOT_ENVIRONMENT=production
+BACKEND_SERVICE_TOKEN=<secret-aléatoire-partagé-avec-le-frontend>
+API_DOCS_ENABLED=false
+```
+
+Service frontend :
+
+```dotenv
+BACKEND_INTERNAL_URL=http://<nom-du-service-backend>.railway.internal:8000
+BACKEND_SERVICE_TOKEN=<même-secret-que-le-backend>
+DEMO_ACCESS_PASSWORD=<mot-de-passe-fort-à-communiquer-aux-recruteurs>
+SESSION_SECRET=<autre-secret-aléatoire-de-32-octets-minimum>
+```
+
+Utilisez une variable partagée Railway pour `BACKEND_SERVICE_TOKEN` afin d'éviter toute divergence. Le domaine public du backend peut rester disponible pour le healthcheck, mais toutes les routes métier répondent `401` sans ce jeton. `/api/health` reste public et ne divulgue aucune information sur le dataset.
 
 ## Routes frontend
 
 | Route | Usage |
 | --- | --- |
+| `/login` | authentification de la démo et création de la session HTTP-only |
 | `/` | vue opérationnelle et KPI du dataset actif |
 | `/data-quality` | audit détaillé et priorités de correction |
 | `/dashboard` | agrégations et graphiques interactifs |
@@ -157,7 +199,7 @@ Si le réseau d'entreprise inspecte les connexions TLS, placez uniquement ses ce
 | `POST` | `/api/report` | rapport Markdown ou HTML réel |
 | `GET` | `/api/history` | opérations persistées dans SQLite |
 
-Un endpoint de santé est également disponible sur `GET /api/health`.
+Un endpoint de santé minimal reste public sur `GET /api/health`. Toutes les autres routes FastAPI exigent le jeton `Authorization: Bearer <BACKEND_SERVICE_TOKEN>` ajouté par le proxy Next.js ; le navigateur ne possède jamais ce jeton. La documentation FastAPI est désactivée par défaut en production.
 
 ## Logique d'analyse
 
@@ -177,7 +219,7 @@ npm run lint
 npm run build
 ```
 
-La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les imports CSV/XLSX, la sécurité des fichiers, le fallback IA, les anomalies et les rapports.
+La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les imports CSV/XLSX, la sécurité des fichiers, l'authentification du service, le démarrage fail-closed, le fallback IA, les anomalies et les rapports.
 
 ### Parcours E2E avec Robot Framework
 
@@ -185,7 +227,7 @@ La suite Robot démarre automatiquement une stack isolée sur les ports `3100` e
 
 Les uploads, rapports et événements SQLite du parcours E2E sont écrits dans `tests/robot/results/runtime/`. Le run recrée cet espace avant chaque exécution : il ne modifie donc pas les données locales de démonstration du backend.
 
-Le parcours comporte 12 scénarios : workflow nominal complet, XLSX corrompu, atomicité de l'import, détection non applicable, dataset entièrement numérique et indisponibilité de l'API.
+Le parcours comporte 14 scénarios : authentification, protection directe du backend, déconnexion, workflow nominal complet, XLSX corrompu, atomicité de l'import, détection non applicable, dataset entièrement numérique et indisponibilité de l'API.
 
 ```powershell
 # Depuis la racine du projet
@@ -197,7 +239,7 @@ Les preuves d'exécution sont générées dans `tests/robot/results/` : `report.
 
 ### Intégration continue
 
-Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) exécute automatiquement Pytest, le contrôle TypeScript, ESLint, le build Next.js et les 12 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
+Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) exécute automatiquement Pytest, le contrôle TypeScript, ESLint, le build Next.js et les 14 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
 
 ## Scénario de démonstration en entretien
 
@@ -231,6 +273,6 @@ Les captures ci-dessous proviennent de l'application Docker réelle avec le data
 
 ## Limites assumées
 
-Docker Compose rend l'exécution reproductible, mais ne remplace pas une plateforme de production publique : TLS, authentification, sauvegardes automatisées et orchestration distribuée restent à ajouter avant une exposition Internet.
+Docker Compose rend l'exécution reproductible, mais ne remplace pas une plateforme SaaS multi-tenant : sauvegardes automatisées, rétention, quotas et orchestration distribuée restent à ajouter avant de traiter des données réelles.
 
-Cette version est une application locale démontrable. Elle n'implémente pas encore l'authentification, le multi-tenant, un stockage objet cloud, une file de tâches ni le déploiement distribué. Les imports, rapports et événements SQLite sont conservés localement sans purge automatique ; en usage prolongé, il faut donc définir une politique de rétention ou nettoyer périodiquement `backend/data/uploads/`, `backend/reports/` et `backend/data/history.db`. Ces fonctions d'exploitation ne sont ni simulées dans l'interface ni revendiquées comme disponibles.
+Cette version implémente une barrière d'accès adaptée à une démonstration publique : mot de passe partagé, cookie HTTP-only signé et jeton privé entre Next.js et FastAPI. Elle ne fournit pas encore de comptes individuels, de rôles, d'isolation multi-tenant, de stockage objet cloud ni de file de tâches. Tous les utilisateurs autorisés partagent encore le même dataset actif. Les imports, rapports et événements SQLite sont conservés sans purge automatique ; en usage prolongé, il faut donc définir une politique de rétention ou nettoyer périodiquement `backend/data/uploads/`, `backend/reports/` et `backend/data/history.db`.

@@ -12,9 +12,7 @@ RUN for certificate in /tmp/copilot-certificates/*.crt; do \
 FROM node:22-alpine AS builder
 
 WORKDIR /app
-ARG NEXT_PUBLIC_API_URL=http://localhost:8000
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
-    NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=dependencies /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt

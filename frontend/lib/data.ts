@@ -5,7 +5,9 @@
  * prevents UI components from knowing transport details.
  */
 
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/$/, '')
+// Le navigateur ne contacte jamais FastAPI directement. Cette route same-origin
+// vérifie la session puis ajoute le jeton de service côté serveur uniquement.
+export const API_URL = '/api/copilot'
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low'
 
@@ -187,13 +189,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     response = await fetch(`${API_URL}${path}`, {
       ...init,
       cache: 'no-store',
+      credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
         ...init?.headers,
       },
     })
   } catch {
-    throw new ApiError(`Impossible de joindre l'API FastAPI sur ${API_URL}.`)
+    throw new ApiError("Impossible de joindre le service d'analyse.")
+  }
+
+  if (response.status === 401 && typeof window !== 'undefined') {
+    const destination = `${window.location.pathname}${window.location.search}`
+    // Le client HTTP n'est pas un composant React : un remplacement complet
+    // garantit aussi que les données du workspace quittent la mémoire du navigateur.
+    window.location.replace(`/login?next=${encodeURIComponent(destination)}`)
+    throw new ApiError('Votre session a expiré. Reconnexion en cours…', 401)
   }
 
   if (!response.ok) {

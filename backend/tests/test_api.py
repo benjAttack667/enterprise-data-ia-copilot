@@ -14,8 +14,7 @@ from backend.src.config import Settings
 def test_health_and_default_marketing_overview(client: TestClient) -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
-    assert health.json()["status"] == "ok"
-    assert health.json()["dataset_id"] == "marketing-leads"
+    assert health.json() == {"status": "ok", "version": "1.0.0"}
 
     response = client.get("/api/overview")
     assert response.status_code == 200
