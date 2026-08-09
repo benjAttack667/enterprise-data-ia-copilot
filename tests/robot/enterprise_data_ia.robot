@@ -24,9 +24,29 @@ ${NUMERIC_ONLY_FILE}  ${CURDIR}${/}fixtures${/}numeric_only.csv
 ${PYTHON_COMMAND}     python
 ${NODE_COMMAND}       node
 ${NEXT_COMMAND}       ${FRONTEND_DIR}${/}node_modules${/}next${/}dist${/}bin${/}next
+${SERVICE_TOKEN}      robot-backend-service-token-2026-at-least-32-bytes
+${ACCESS_PASSWORD}    RobotDemoPassword!2026
+${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
 
 
 *** Test Cases ***
+00 - Authentifier la démo sans exposer le backend
+    [Documentation]    Vérifie la protection directe de FastAPI, le refus d'un mauvais mot de passe puis une session valide.
+    Wait Until Location Contains    /login    20s
+    Location Should Contain    next=
+    Page Should Contain    Connexion au workspace
+    Page Should Contain    Données de démonstration uniquement
+    ${frame_policy}=    Evaluate    __import__('httpx').get('${FRONTEND_URL}/login', timeout=5).headers.get('x-frame-options')
+    Should Be Equal    ${frame_policy}    DENY
+    ${status}=    Evaluate    __import__('httpx').get('${API_URL}/api/overview', timeout=5).status_code
+    Should Be Equal As Integers    ${status}    401
+    Input Password    css:input[name="password"]    mot-de-passe-incorrect
+    Click Button    xpath=//button[normalize-space()="Accéder au workspace"]
+    Wait Until Element Contains    css:[role="alert"]    Mot de passe incorrect    10s
+    Input Password    css:input[name="password"]    ${ACCESS_PASSWORD}
+    Click Button    xpath=//button[normalize-space()="Accéder au workspace"]
+    Wait Until Location Is    ${FRONTEND_URL}/    20s
+
 01 - Afficher le dataset de démonstration réel
     [Documentation]    Vérifie les dimensions calculées par FastAPI au démarrage.
     Wait Until Page Contains    Marketing Leads    30s
@@ -135,12 +155,23 @@ ${NEXT_COMMAND}       ${FRONTEND_DIR}${/}node_modules${/}next${/}dist${/}bin${/}
     List Selection Should Be    css:select[aria-label="Mesure"]    y
     Wait Until Page Contains    sum de y par x    30s
 
-12 - Signaler clairement une API indisponible
+12 - Fermer puis rouvrir une session
+    [Documentation]    Vérifie que la déconnexion invalide le cookie avant de poursuivre la suite.
+    Click Button    css:button[aria-label="Se déconnecter"]
+    Wait Until Location Is    ${FRONTEND_URL}/login    20s
+    Go To    ${FRONTEND_URL}/
+    Wait Until Location Contains    /login    20s
+    Input Password    css:input[name="password"]    ${ACCESS_PASSWORD}
+    Click Button    xpath=//button[normalize-space()="Accéder au workspace"]
+    Wait Until Location Is    ${FRONTEND_URL}/    20s
+    Wait Until Page Contains    Score qualité    30s
+
+13 - Signaler clairement une API indisponible
     [Documentation]    Coupe uniquement le backend Robot puis vérifie l'état d'erreur du frontend.
     Terminate Process    robot-backend    kill=True
     Reload Page
     Wait Until Page Contains    Chargement impossible    30s
-    Page Should Contain    Impossible de joindre l'API FastAPI
+    Page Should Contain    Le service d'analyse est temporairement indisponible
     Page Should Contain    Réessayer
 
 
@@ -164,6 +195,9 @@ Démarrer la stack Robot
     ...    stdout=${RESULTS_DIR}${/}backend.log
     ...    stderr=STDOUT
     ...    env:FRONTEND_ORIGINS=${FRONTEND_URL}
+    ...    env:COPILOT_ENVIRONMENT=production
+    ...    env:BACKEND_SERVICE_TOKEN=${SERVICE_TOKEN}
+    ...    env:API_DOCS_ENABLED=false
     ...    env:OPENAI_API_KEY=${EMPTY}
     ...    env:COPILOT_UPLOADS_DIR=${RUNTIME_DIR}${/}uploads
     ...    env:COPILOT_REPORTS_DIR=${RUNTIME_DIR}${/}reports
@@ -180,7 +214,10 @@ Démarrer la stack Robot
     ...    alias=robot-frontend
     ...    stdout=${RESULTS_DIR}${/}frontend.log
     ...    stderr=STDOUT
-    ...    env:NEXT_PUBLIC_API_URL=${API_URL}
+    ...    env:BACKEND_INTERNAL_URL=${API_URL}
+    ...    env:BACKEND_SERVICE_TOKEN=${SERVICE_TOKEN}
+    ...    env:DEMO_ACCESS_PASSWORD=${ACCESS_PASSWORD}
+    ...    env:SESSION_SECRET=${SESSION_SECRET}
     ...    env:NEXT_DIST_DIR=.next-robot
     Wait Until Keyword Succeeds    120s    1s    L'API doit répondre
     Wait Until Keyword Succeeds    120s    1s    Le frontend doit répondre

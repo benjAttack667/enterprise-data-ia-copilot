@@ -1,12 +1,18 @@
 'use client'
 
 import { useState } from 'react'
+import { usePathname } from 'next/navigation'
 import { Sidebar } from '@/components/sidebar'
 import { Header } from '@/components/header'
 import { DatasetProvider, useDataset } from '@/components/dataset-provider'
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const pathname = usePathname()
+
+  // La page de connexion possède sa propre composition plein écran et ne doit
+  // surtout pas déclencher le chargement du dataset avant authentification.
+  if (pathname === '/login') return <>{children}</>
 
   return (
     <DatasetProvider>

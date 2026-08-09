@@ -3,6 +3,7 @@
 import { CheckCircle2, Database, LoaderCircle, Menu, WifiOff } from 'lucide-react'
 import { DatasetUploadButton } from '@/components/dataset-upload'
 import { useDataset } from '@/components/dataset-provider'
+import { LogoutButton } from '@/components/logout-button'
 
 export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const { overview, loading, uploading, error } = useDataset()
@@ -36,6 +37,8 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
         </div>
 
         <DatasetUploadButton compact />
+
+        <LogoutButton />
 
         <span
           title={error ?? undefined}

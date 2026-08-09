@@ -9,8 +9,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import Body, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import HTMLResponse, JSONResponse
 
 try:  # Permet ``uvicorn backend.main:app`` depuis la racine.
     from .src.ai_service import AIService
@@ -22,6 +34,7 @@ try:  # Permet ``uvicorn backend.main:app`` depuis la racine.
     from .src.models import AISummaryRequest, Aggregation, AskRequest, ReportRequest
     from .src.quality import audit_data_quality
     from .src.reporting import ReportService
+    from .src.security import build_service_token_dependency
 except ImportError:  # Permet aussi ``uvicorn main:app`` depuis ``backend``.
     from src.ai_service import AIService
     from src.analytics import build_dashboard, build_overview
@@ -32,6 +45,7 @@ except ImportError:  # Permet aussi ``uvicorn main:app`` depuis ``backend``.
     from src.models import AISummaryRequest, Aggregation, AskRequest, ReportRequest
     from src.quality import audit_data_quality
     from src.reporting import ReportService
+    from src.security import build_service_token_dependency
 
 
 API_VERSION = "1.0.0"
@@ -88,6 +102,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "API d'analyse de données, Data Quality, détection d'anomalies, "
             "assistant IA avec fallback local et rapports exportables."
         ),
+        # Registered below so documentation follows the same security policy.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     application.add_middleware(
         CORSMiddleware,
@@ -105,20 +123,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_settings.openai_api_key, active_settings.openai_model
     )
     application.state.reports = ReportService(active_settings.reports_dir)
+    require_service_token = build_service_token_dependency(active_settings)
+    protected_api = APIRouter(dependencies=[Depends(require_service_token)])
+
+    if active_settings.api_docs_enabled:
+
+        @application.get(
+            "/openapi.json",
+            include_in_schema=False,
+            dependencies=[Depends(require_service_token)],
+        )
+        def openapi_schema() -> JSONResponse:
+            """Expose the API contract only when documentation is enabled."""
+
+            return JSONResponse(application.openapi())
+
+        @application.get(
+            "/docs",
+            include_in_schema=False,
+            dependencies=[Depends(require_service_token)],
+        )
+        def swagger_ui() -> HTMLResponse:
+            """Serve Swagger UI when documentation is explicitly enabled."""
+
+            return get_swagger_ui_html(
+                openapi_url="/openapi.json",
+                title=f"{application.title} - Swagger UI",
+            )
+
+        @application.get(
+            "/redoc",
+            include_in_schema=False,
+            dependencies=[Depends(require_service_token)],
+        )
+        def redoc_ui() -> HTMLResponse:
+            """Serve ReDoc when documentation is explicitly enabled."""
+
+            return get_redoc_html(
+                openapi_url="/openapi.json",
+                title=f"{application.title} - ReDoc",
+            )
 
     @application.get("/api/health", tags=["system"])
-    def health(request: Request) -> dict[str, object]:
-        """Confirme que l'API et son dataset par défaut sont disponibles."""
+    def health() -> dict[str, str]:
+        """Expose a cheap public liveness probe without dataset metadata."""
 
-        snapshot = _active(request)
-        return {
-            "status": "ok",
-            "version": API_VERSION,
-            "dataset_id": snapshot.id,
-            "dataset_name": snapshot.name,
-        }
+        return {"status": "ok", "version": API_VERSION}
 
-    @application.post("/api/upload", tags=["datasets"])
+    @protected_api.post("/api/upload", tags=["datasets"])
     async def upload_dataset(
         request: Request,
         file: Annotated[UploadFile, File(description="Fichier CSV ou XLSX")],
@@ -171,7 +223,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "message": "Dataset importé et activé avec succès.",
         }
 
-    @application.get("/api/overview", tags=["analytics"])
+    @protected_api.get("/api/overview", tags=["analytics"])
     def overview(request: Request) -> dict[str, object]:
         """Retourne les KPI et séries de la vue d'ensemble."""
 
@@ -180,7 +232,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _record(request, "overview_analyzed", snapshot, quality_score=payload["quality_score"])
         return payload
 
-    @application.get("/api/data-quality", tags=["analytics"])
+    @protected_api.get("/api/data-quality", tags=["analytics"])
     def data_quality(request: Request) -> dict[str, object]:
         """Exécute l'audit Data Quality détaillé du dataset actif."""
 
@@ -195,7 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return payload
 
-    @application.get("/api/dashboard", tags=["analytics"])
+    @protected_api.get("/api/dashboard", tags=["analytics"])
     def dashboard(
         request: Request,
         dimension: str | None = Query(default=None, max_length=200),
@@ -224,7 +276,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return payload
 
-    @application.post("/api/ai-summary", tags=["ai"])
+    @protected_api.post("/api/ai-summary", tags=["ai"])
     def ai_summary(
         request: Request,
         payload: Annotated[AISummaryRequest | None, Body()] = None,
@@ -242,7 +294,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _record(request, "ai_summary_generated", snapshot, mode=result["mode"])
         return result
 
-    @application.post("/api/ask", tags=["ai"])
+    @protected_api.post("/api/ask", tags=["ai"])
     def ask_assistant(request: Request, payload: AskRequest) -> dict[str, object]:
         """Répond à une question sur les indicateurs calculés du dataset actif."""
 
@@ -254,7 +306,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _record(request, "assistant_question_answered", snapshot, mode=result["mode"])
         return result
 
-    @application.get("/api/anomalies", tags=["analytics"])
+    @protected_api.get("/api/anomalies", tags=["analytics"])
     def anomalies(request: Request) -> dict[str, object]:
         """Retourne les lignes atypiques réellement prédites par Isolation Forest."""
 
@@ -263,7 +315,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         _record(request, "anomalies_analyzed", snapshot, count=payload["count"])
         return payload
 
-    @application.post("/api/report", tags=["reports"])
+    @protected_api.post("/api/report", tags=["reports"])
     def create_report(
         request: Request,
         payload: Annotated[ReportRequest | None, Body()] = None,
@@ -285,7 +337,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return result
 
-    @application.get("/api/history", tags=["history"])
+    @protected_api.get("/api/history", tags=["history"])
     def history(
         request: Request,
         limit: int = Query(default=100, ge=1, le=200),
@@ -294,6 +346,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         return {"items": request.app.state.history.list_recent(limit)}
 
+    application.include_router(protected_api)
     return application
 
 
