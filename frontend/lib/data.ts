@@ -215,7 +215,8 @@ function retryAfterSeconds(value: string | null) {
   return Math.max(0, Math.ceil((retryDate - Date.now()) / 1_000))
 }
 
-const MAX_GET_BUSY_RETRIES = 3
+const MAX_BUSY_RETRIES = 3
+const MAX_AUTOMATIC_UPLOAD_RETRY_SECONDS = 5
 
 function wait(milliseconds: number) {
   return new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds))
@@ -243,16 +244,24 @@ async function executeRequest<T>(
       throw new ApiError("Impossible de joindre le service d'analyse.")
     }
 
-    // Le backend sérialise les calculs lourds et renvoie Retry-After lorsqu'il
-    // est occupé. Seules les lectures idempotentes sont rejouées automatiquement.
+    const seconds = retryAfterSeconds(response.headers.get('retry-after'))
+    // Le backend sérialise les calculs lourds et renvoie l'upload avant même
+    // de lire son corps lorsque le slot est occupé. Les GET sont toujours sûrs
+    // à rejouer ; un upload ne l'est que pour une attente courte, ce qui exclut
+    // le quota glissant de plusieurs minutes.
+    const retryableBusyRequest =
+      method === 'GET' ||
+      (method === 'POST' &&
+        path === '/api/upload' &&
+        seconds !== undefined &&
+        seconds <= MAX_AUTOMATIC_UPLOAD_RETRY_SECONDS)
     if (
-      method === 'GET' &&
       response.status === 429 &&
-      attempt < MAX_GET_BUSY_RETRIES
+      retryableBusyRequest &&
+      attempt < MAX_BUSY_RETRIES
     ) {
-      const seconds = retryAfterSeconds(response.headers.get('retry-after')) ?? 1
       if (response.body) await response.body.cancel().catch(() => undefined)
-      await wait(Math.min(Math.max(seconds, 1), 5) * 1_000)
+      await wait(Math.min(Math.max(seconds ?? 1, 1), 5) * 1_000)
       continue
     }
     break
