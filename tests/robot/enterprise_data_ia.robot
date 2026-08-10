@@ -23,7 +23,7 @@ ${NON_NUMERIC_FILE}   ${CURDIR}${/}fixtures${/}non_numeric.csv
 ${NUMERIC_ONLY_FILE}  ${CURDIR}${/}fixtures${/}numeric_only.csv
 ${PYTHON_COMMAND}     python
 ${NODE_COMMAND}       node
-${NEXT_COMMAND}       ${FRONTEND_DIR}${/}node_modules${/}next${/}dist${/}bin${/}next
+${ROBOT_SERVER}       ${FRONTEND_DIR}${/}scripts${/}robot-server.mjs
 ${SERVICE_TOKEN}      robot-backend-service-token-2026-at-least-32-bytes
 ${ACCESS_PASSWORD}    RobotDemoPassword!2026
 ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
@@ -126,7 +126,7 @@ ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
     Wait Until Page Contains    Packaging Data    30s
     ${broken_xlsx}=    Normalize Path    ${BROKEN_XLSX}
     Choose File    css:input[type="file"]    ${broken_xlsx}
-    Wait Until Element Contains    css:[role="alert"]    Le fichier ne peut pas être lu    30s
+    Wait Until Element Contains    css:[role="alert"]    n'est pas une archive Excel valide    30s
     Page Should Contain    Packaging Data
     Page Should Contain    12 lignes
     Click Button    xpath=//*[@role="alert"]//button[normalize-space()="Fermer"]
@@ -181,6 +181,10 @@ Démarrer la stack Robot
     Run Keyword And Ignore Error    Remove Directory    ${RUNTIME_DIR}    recursive=True
     Directory Should Not Exist    ${RUNTIME_DIR}
     Create Directory    ${RUNTIME_DIR}
+    # Next.js recalcule ces deux fichiers selon NEXT_DIST_DIR au démarrage.
+    # Une copie exacte permet au teardown de préserver le workspace du développeur.
+    Copy File    ${FRONTEND_DIR}${/}next-env.d.ts    ${RUNTIME_DIR}${/}next-env.d.ts
+    Copy File    ${FRONTEND_DIR}${/}tsconfig.json    ${RUNTIME_DIR}${/}tsconfig.json
     Start Process
     ...    ${PYTHON_COMMAND}
     ...    -m
@@ -204,12 +208,7 @@ Démarrer la stack Robot
     ...    env:COPILOT_DATABASE_PATH=${RUNTIME_DIR}${/}history.db
     Start Process
     ...    ${NODE_COMMAND}
-    ...    ${NEXT_COMMAND}
-    ...    dev
-    ...    --hostname
-    ...    127.0.0.1
-    ...    --port
-    ...    3100
+    ...    ${ROBOT_SERVER}
     ...    cwd=${FRONTEND_DIR}
     ...    alias=robot-frontend
     ...    stdout=${RESULTS_DIR}${/}frontend.log
@@ -219,6 +218,10 @@ Démarrer la stack Robot
     ...    env:DEMO_ACCESS_PASSWORD=${ACCESS_PASSWORD}
     ...    env:SESSION_SECRET=${SESSION_SECRET}
     ...    env:NEXT_DIST_DIR=.next-robot
+    ...    env:NODE_ENV=development
+    ...    env:NEXT_TELEMETRY_DISABLED=1
+    ...    env:ROBOT_FRONTEND_HOST=127.0.0.1
+    ...    env:ROBOT_FRONTEND_PORT=3100
     Wait Until Keyword Succeeds    120s    1s    L'API doit répondre
     Wait Until Keyword Succeeds    120s    1s    Le frontend doit répondre
     ${options}=    Evaluate    selenium.webdriver.ChromeOptions()    modules=selenium.webdriver
@@ -240,3 +243,5 @@ Arrêter la stack Robot
     Run Keyword And Ignore Error    Close All Browsers
     Run Keyword And Ignore Error    Terminate Process    robot-frontend    kill=True
     Run Keyword And Ignore Error    Terminate Process    robot-backend    kill=True
+    Run Keyword And Ignore Error    Copy File    ${RUNTIME_DIR}${/}next-env.d.ts    ${FRONTEND_DIR}${/}next-env.d.ts
+    Run Keyword And Ignore Error    Copy File    ${RUNTIME_DIR}${/}tsconfig.json    ${FRONTEND_DIR}${/}tsconfig.json

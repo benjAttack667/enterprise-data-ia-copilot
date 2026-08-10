@@ -28,7 +28,9 @@ export default function DashboardPage() {
     setLoading(true)
     setError(null)
     try {
-      setDashboard(await api.dashboard(params))
+      const nextDashboard = await api.dashboard(params)
+      setDashboard(nextDashboard)
+      setError(null)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Impossible de calculer le dashboard.')
     } finally {

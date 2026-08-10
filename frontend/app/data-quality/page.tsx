@@ -20,7 +20,7 @@ export default function DataQualityPage() {
   if (datasetState.error && !datasetState.overview) return <ErrorState message={datasetState.error} retry={datasetState.refresh} />
   if (!datasetState.overview) return <EmptyDatasetState />
   if (resource.loading && !resource.data) return <LoadingState label="Audit Data Quality en cours…" />
-  if (resource.error) return <ErrorState message={resource.error} retry={resource.reload} />
+  if (resource.error && !resource.data) return <ErrorState message={resource.error} retry={resource.reload} />
   if (!resource.data) return <LoadingState label="Préparation de l’audit…" />
 
   const summary = typeof resource.data.summary === 'string' ? {} : resource.data.summary

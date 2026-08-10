@@ -6,6 +6,7 @@ répertoire de travail (par exemple avec ``uvicorn backend.main:app``).
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,19 @@ from dotenv import load_dotenv
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 MIN_PRODUCTION_TOKEN_BYTES = 32
+RESOURCE_INTEGER_UPPER_BOUNDS = {
+    "MAX_UPLOAD_BYTES": 10 * 1024 * 1024,
+    "MAX_DATASET_ROWS": 100_000,
+    "MAX_DATASET_COLUMNS": 200,
+    "MAX_DATASET_CELLS": 2_000_000,
+    "MAX_XLSX_UNCOMPRESSED_BYTES": 50 * 1024 * 1024,
+    "MAX_XLSX_ENTRIES": 1_000,
+    "UPLOAD_RATE_LIMIT_REQUESTS": 100,
+    "UPLOAD_RATE_LIMIT_WINDOW_SECONDS": 86_400,
+    "MAX_REPORT_FILES": 200,
+    "MAX_HISTORY_ENTRIES": 10_000,
+}
+MAX_XLSX_COMPRESSION_RATIO_LIMIT = 100.0
 load_dotenv(BACKEND_DIR / ".env")
 
 
@@ -56,7 +70,17 @@ class Settings:
     uploads_dir: Path
     reports_dir: Path
     database_path: Path
-    max_upload_bytes: int = 50 * 1024 * 1024
+    max_upload_bytes: int = 10 * 1024 * 1024
+    max_dataset_rows: int = 100_000
+    max_dataset_columns: int = 200
+    max_dataset_cells: int = 2_000_000
+    max_xlsx_uncompressed_bytes: int = 50 * 1024 * 1024
+    max_xlsx_compression_ratio: float = 100.0
+    max_xlsx_entries: int = 1_000
+    upload_rate_limit_requests: int = 10
+    upload_rate_limit_window_seconds: int = 600
+    max_report_files: int = 20
+    max_history_entries: int = 500
     openai_api_key: str | None = None
     openai_model: str = "gpt-4.1-mini"
     environment: Literal["local", "test", "production"] = "local"
@@ -77,6 +101,57 @@ class Settings:
         if self.environment not in {"local", "test", "production"}:
             raise ValueError(
                 "COPILOT_ENVIRONMENT doit valoir local, test ou production."
+            )
+        positive_integer_settings = {
+            "MAX_UPLOAD_BYTES": self.max_upload_bytes,
+            "MAX_DATASET_ROWS": self.max_dataset_rows,
+            "MAX_DATASET_COLUMNS": self.max_dataset_columns,
+            "MAX_DATASET_CELLS": self.max_dataset_cells,
+            "MAX_XLSX_UNCOMPRESSED_BYTES": self.max_xlsx_uncompressed_bytes,
+            "MAX_XLSX_ENTRIES": self.max_xlsx_entries,
+            "UPLOAD_RATE_LIMIT_REQUESTS": self.upload_rate_limit_requests,
+            "UPLOAD_RATE_LIMIT_WINDOW_SECONDS": self.upload_rate_limit_window_seconds,
+            "MAX_REPORT_FILES": self.max_report_files,
+            "MAX_HISTORY_ENTRIES": self.max_history_entries,
+        }
+        invalid_setting = next(
+            (
+                name
+                for name, value in positive_integer_settings.items()
+                if not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            ),
+            None,
+        )
+        if invalid_setting is not None:
+            raise ValueError(f"{invalid_setting} doit être un entier strictement positif.")
+        excessive_setting = next(
+            (
+                name
+                for name, value in positive_integer_settings.items()
+                if value > RESOURCE_INTEGER_UPPER_BOUNDS[name]
+            ),
+            None,
+        )
+        if excessive_setting is not None:
+            raise ValueError(
+                f"{excessive_setting} ne peut pas dépasser "
+                f"{RESOURCE_INTEGER_UPPER_BOUNDS[excessive_setting]}."
+            )
+        if (
+            isinstance(self.max_xlsx_compression_ratio, bool)
+            or not isinstance(self.max_xlsx_compression_ratio, (int, float))
+            or not math.isfinite(self.max_xlsx_compression_ratio)
+            or self.max_xlsx_compression_ratio < 1
+        ):
+            raise ValueError("MAX_XLSX_COMPRESSION_RATIO doit être supérieur ou égal à 1.")
+        if self.max_xlsx_compression_ratio > MAX_XLSX_COMPRESSION_RATIO_LIMIT:
+            raise ValueError(
+                "MAX_XLSX_COMPRESSION_RATIO ne peut pas dépasser "
+                f"{MAX_XLSX_COMPRESSION_RATIO_LIMIT:g}."
+            )
+        if self.max_dataset_cells < self.max_dataset_columns:
+            raise ValueError(
+                "MAX_DATASET_CELLS doit permettre au moins une ligne complète."
             )
         if (
             self.backend_service_token is not None
@@ -137,7 +212,25 @@ class Settings:
             database_path=_path_from_env(
                 "COPILOT_DATABASE_PATH", BACKEND_DIR / "data" / "history.db"
             ),
-            max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))),
+            max_upload_bytes=int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
+            max_dataset_rows=int(os.getenv("MAX_DATASET_ROWS", "100000")),
+            max_dataset_columns=int(os.getenv("MAX_DATASET_COLUMNS", "200")),
+            max_dataset_cells=int(os.getenv("MAX_DATASET_CELLS", "2000000")),
+            max_xlsx_uncompressed_bytes=int(
+                os.getenv("MAX_XLSX_UNCOMPRESSED_BYTES", str(50 * 1024 * 1024))
+            ),
+            max_xlsx_compression_ratio=float(
+                os.getenv("MAX_XLSX_COMPRESSION_RATIO", "100")
+            ),
+            max_xlsx_entries=int(os.getenv("MAX_XLSX_ENTRIES", "1000")),
+            upload_rate_limit_requests=int(
+                os.getenv("UPLOAD_RATE_LIMIT_REQUESTS", "10")
+            ),
+            upload_rate_limit_window_seconds=int(
+                os.getenv("UPLOAD_RATE_LIMIT_WINDOW_SECONDS", "600")
+            ),
+            max_report_files=int(os.getenv("MAX_REPORT_FILES", "20")),
+            max_history_entries=int(os.getenv("MAX_HISTORY_ENTRIES", "500")),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
             environment=environment,

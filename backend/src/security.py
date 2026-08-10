@@ -24,18 +24,27 @@ SERVICE_BEARER_SCHEME = HTTPBearer(
 ServiceTokenDependency = Callable[..., Coroutine[Any, Any, None]]
 
 
+def service_token_is_valid(settings: Settings, provided_token: str | None) -> bool:
+    """Validate a raw bearer token with one shared constant-time comparison.
+
+    The ASGI business guard calls this helper before request-body parsing,
+    while the FastAPI dependency below remains the defence-in-depth check for
+    routing.
+    """
+
+    if settings.backend_service_token is None:
+        return True
+    expected_token = settings.backend_service_token.encode("utf-8")
+    candidate = (provided_token or "").encode("utf-8")
+    return secrets.compare_digest(candidate, expected_token)
+
+
 def build_service_token_dependency(settings: Settings) -> ServiceTokenDependency:
     """Build an application-scoped bearer-token validator.
 
     ``compare_digest`` operates on bytes to support every header value without
     raising on non-ASCII input and to avoid data-dependent string comparison.
     """
-
-    expected_token = (
-        settings.backend_service_token.encode("utf-8")
-        if settings.backend_service_token is not None
-        else None
-    )
 
     async def require_service_token(
         credentials: Annotated[
@@ -44,16 +53,11 @@ def build_service_token_dependency(settings: Settings) -> ServiceTokenDependency
         ] = None,
     ) -> None:
         # An unprotected backend is allowed only in the explicit local/test mode.
-        if expected_token is None:
+        if settings.backend_service_token is None:
             return
 
-        provided_token = (
-            credentials.credentials.encode("utf-8")
-            if credentials is not None
-            else b""
-        )
-        if credentials is None or not secrets.compare_digest(
-            provided_token, expected_token
+        if credentials is None or not service_token_is_valid(
+            settings, credentials.credentials
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import threading
+import uuid
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
@@ -115,8 +118,41 @@ article strong{{display:block;font-size:24px;margin-top:8px}} section{{backgroun
 class ReportService:
     """Crée un rapport sur disque et renvoie exactement son contenu."""
 
-    def __init__(self, reports_dir: Path) -> None:
+    def __init__(self, reports_dir: Path, max_files: int = 20) -> None:
         self.reports_dir = reports_dir
+        self.max_files = max_files
+        self._lock = threading.RLock()
+        self._filename_sequence = 0
+        self.reports_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            self._cleanup_staged_reports()
+            self._prune_reports()
+
+    def _report_paths(self) -> list[Path]:
+        return [
+            path
+            for pattern in ("data-report-*.md", "data-report-*.html")
+            for path in self.reports_dir.glob(pattern)
+            if path.is_file()
+        ]
+
+    def _cleanup_staged_reports(self) -> None:
+        for path in self.reports_dir.glob(".report-*.part"):
+            path.unlink(missing_ok=True)
+
+    def _prune_reports(self, keep: Path | None = None) -> None:
+        paths = sorted(
+            self._report_paths(),
+            # Filename is a deterministic tie-breaker on filesystems whose
+            # timestamp resolution collapses several rapid generations.
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+            reverse=True,
+        )
+        keep_is_present = keep is not None and keep in paths
+        candidates = [path for path in paths if path != keep]
+        retained_candidate_count = self.max_files - int(keep_is_present)
+        for path in candidates[retained_candidate_count:]:
+            path.unlink(missing_ok=True)
 
     def generate(
         self,
@@ -137,12 +173,50 @@ class ReportService:
             content = _html_report(overview, quality, anomalies)
         else:
             raise ValueError("Format de rapport non pris en charge.")
-        filename = f"data-report-{stamp}.{extension}"
-        path = self.reports_dir / filename
-        path.write_text(content, encoding="utf-8")
+        with self._lock:
+            # Windows clocks can return the same microsecond for rapid calls.
+            # A locked sequence plus UUID prevents replacement and also gives
+            # retention a stable order when filesystem mtimes are tied.
+            self._filename_sequence += 1
+            filename = (
+                f"data-report-{stamp}-{self._filename_sequence:08d}-"
+                f"{uuid.uuid4().hex}.{extension}"
+            )
+            path = self.reports_dir / filename
+            staged_path = self.reports_dir / f".report-{uuid.uuid4().hex}.part"
+            try:
+                with staged_path.open(
+                    "w", encoding="utf-8", newline="\n"
+                ) as staged_file:
+                    staged_file.write(content)
+                os.replace(staged_path, path)
+                try:
+                    self._prune_reports(keep=path)
+                except OSError as prune_error:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError as rollback_error:
+                        raise rollback_error from prune_error
+                    raise
+            finally:
+                try:
+                    staged_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         return {
             "filename": filename,
             "format": report_format,
             "content": content,
             "created_at": created_at.isoformat(),
         }
+
+    def storage_metrics(self) -> dict[str, int]:
+        """Return aggregate retained usage without exposing report names."""
+
+        with self._lock:
+            paths = self._report_paths()
+            return {
+                "files": len(paths),
+                "bytes": sum(path.stat().st_size for path in paths),
+                "max_files": self.max_files,
+            }

@@ -30,15 +30,19 @@ function AppFrame({
   sidebarOpen: boolean
   setSidebarOpen: (open: boolean) => void
 }) {
-  const { revision, error, overview, clearError } = useDataset()
+  const { revision, error, uploadError, overview, clearError } = useDataset()
+  const visibleError = uploadError ?? (overview ? error : null)
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Header onMenuClick={() => setSidebarOpen(true)} />
-        {error && overview ? (
-          <div role="alert" className="flex items-center justify-between gap-3 border-b border-destructive/20 bg-destructive/5 px-4 py-2 text-xs text-destructive lg:px-6">
-            <span>{error}</span>
+        {visibleError ? (
+          <div role="alert" aria-live="assertive" className="flex items-center justify-between gap-3 border-b border-destructive/20 bg-destructive/5 px-4 py-2.5 text-xs text-destructive lg:px-6">
+            <span>
+              <strong className="font-semibold">{uploadError ? 'Import impossible. ' : ''}</strong>
+              {visibleError}
+            </span>
             <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={clearError}>Fermer</button>
           </div>
         ) : null}

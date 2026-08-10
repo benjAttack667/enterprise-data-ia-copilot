@@ -32,7 +32,11 @@ def test_health_and_default_marketing_overview(client: TestClient) -> None:
         "missing_distribution",
         "category_breakdown",
         "trend",
+        "storage",
     }
+    assert payload["storage"]["uploads"]["max_files"] == 1
+    assert payload["storage"]["reports"]["max_files"] == 20
+    assert payload["storage"]["history"]["max_entries"] == 500
     assert all({"id", "label", "value", "hint", "tone"} <= set(kpi) for kpi in payload["kpis"])
     assert {"rows", "columns", "quality", "anomalies", "missing_values", "duplicates"} <= {
         kpi["id"] for kpi in payload["kpis"]

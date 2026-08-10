@@ -62,6 +62,26 @@ export type TrendPoint = {
   [key: string]: string | number | undefined
 }
 
+export type StorageUsage = {
+  uploads: {
+    files: number
+    bytes: number
+    max_files: number
+    max_file_bytes: number
+  }
+  reports: {
+    files: number
+    bytes: number
+    max_files: number
+  }
+  history: {
+    entries: number
+    max_entries: number
+    files: number
+    bytes: number
+  }
+}
+
 export type OverviewResponse = {
   dataset: DatasetInfo
   kpis: Kpi[]
@@ -72,6 +92,7 @@ export type OverviewResponse = {
   missing_distribution: MissingPoint[]
   category_breakdown: CategoryPoint[]
   trend: TrendPoint[]
+  storage?: StorageUsage
 }
 
 export type QualityProblem = {
@@ -176,27 +197,74 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message)
     this.name = 'ApiError'
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+function retryAfterSeconds(value: string | null) {
+  if (!value) return undefined
+
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds)
+
+  const retryDate = Date.parse(value)
+  if (Number.isNaN(retryDate)) return undefined
+  return Math.max(0, Math.ceil((retryDate - Date.now()) / 1_000))
+}
+
+const MAX_BUSY_RETRIES = 3
+const MAX_AUTOMATIC_UPLOAD_RETRY_SECONDS = 5
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds))
+}
+
+async function executeRequest<T>(
+  path: string,
+  init: RequestInit | undefined,
+  method: string,
+): Promise<T> {
   let response: Response
 
-  try {
-    response = await fetch(`${API_URL}${path}`, {
-      ...init,
-      cache: 'no-store',
-      credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        ...init?.headers,
-      },
-    })
-  } catch {
-    throw new ApiError("Impossible de joindre le service d'analyse.")
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      response = await fetch(`${API_URL}${path}`, {
+        ...init,
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+          ...init?.headers,
+        },
+      })
+    } catch {
+      throw new ApiError("Impossible de joindre le service d'analyse.")
+    }
+
+    const seconds = retryAfterSeconds(response.headers.get('retry-after'))
+    // Le backend sérialise les calculs lourds et renvoie l'upload avant même
+    // de lire son corps lorsque le slot est occupé. Les GET sont toujours sûrs
+    // à rejouer ; un upload ne l'est que pour une attente courte, ce qui exclut
+    // le quota glissant de plusieurs minutes.
+    const retryableBusyRequest =
+      method === 'GET' ||
+      (method === 'POST' &&
+        path === '/api/upload' &&
+        seconds !== undefined &&
+        seconds <= MAX_AUTOMATIC_UPLOAD_RETRY_SECONDS)
+    if (
+      response.status === 429 &&
+      retryableBusyRequest &&
+      attempt < MAX_BUSY_RETRIES
+    ) {
+      if (response.body) await response.body.cancel().catch(() => undefined)
+      await wait(Math.min(Math.max(seconds ?? 1, 1), 5) * 1_000)
+      continue
+    }
+    break
   }
 
   if (response.status === 401 && typeof window !== 'undefined') {
@@ -219,11 +287,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const text = await response.text().catch(() => '')
       if (text) message = text
     }
-    throw new ApiError(message, response.status)
+    throw new ApiError(
+      message,
+      response.status,
+      retryAfterSeconds(response.headers.get('retry-after')),
+    )
   }
 
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase()
+  return executeRequest<T>(path, init, method)
 }
 
 function queryString(params: Record<string, string | undefined>) {

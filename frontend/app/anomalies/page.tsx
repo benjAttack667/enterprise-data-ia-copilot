@@ -38,7 +38,7 @@ export default function AnomaliesPage() {
   if (datasetState.error && !datasetState.overview) return <ErrorState message={datasetState.error} retry={datasetState.refresh} />
   if (!datasetState.overview) return <EmptyDatasetState />
   if (resource.loading && !resource.data) return <LoadingState label="Exécution d’IsolationForest…" />
-  if (resource.error) return <ErrorState message={resource.error} retry={resource.reload} />
+  if (resource.error && !resource.data) return <ErrorState message={resource.error} retry={resource.reload} />
   if (!resource.data) return <LoadingState label="Préparation de la détection…" />
 
   const rows = resource.data.rows.map(flattenRow)
