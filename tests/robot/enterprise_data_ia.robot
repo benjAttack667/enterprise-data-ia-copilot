@@ -126,7 +126,7 @@ ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
     Wait Until Page Contains    Packaging Data    30s
     ${broken_xlsx}=    Normalize Path    ${BROKEN_XLSX}
     Choose File    css:input[type="file"]    ${broken_xlsx}
-    Wait Until Element Contains    css:[role="alert"]    Le fichier ne peut pas être lu    30s
+    Wait Until Element Contains    css:[role="alert"]    n'est pas une archive Excel valide    30s
     Page Should Contain    Packaging Data
     Page Should Contain    12 lignes
     Click Button    xpath=//*[@role="alert"]//button[normalize-space()="Fermer"]

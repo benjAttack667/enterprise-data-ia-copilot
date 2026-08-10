@@ -15,7 +15,9 @@ export function useApiResource<T>(
     setLoading(true)
     setError(null)
     try {
-      setData(await loader())
+      const nextData = await loader()
+      setData(nextData)
+      setError(null)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Une erreur inattendue est survenue.')
     } finally {

@@ -215,21 +215,47 @@ function retryAfterSeconds(value: string | null) {
   return Math.max(0, Math.ceil((retryDate - Date.now()) / 1_000))
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+const MAX_GET_BUSY_RETRIES = 3
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds))
+}
+
+async function executeRequest<T>(
+  path: string,
+  init: RequestInit | undefined,
+  method: string,
+): Promise<T> {
   let response: Response
 
-  try {
-    response = await fetch(`${API_URL}${path}`, {
-      ...init,
-      cache: 'no-store',
-      credentials: 'same-origin',
-      headers: {
-        Accept: 'application/json',
-        ...init?.headers,
-      },
-    })
-  } catch {
-    throw new ApiError("Impossible de joindre le service d'analyse.")
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      response = await fetch(`${API_URL}${path}`, {
+        ...init,
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: {
+          Accept: 'application/json',
+          ...init?.headers,
+        },
+      })
+    } catch {
+      throw new ApiError("Impossible de joindre le service d'analyse.")
+    }
+
+    // Le backend sérialise les calculs lourds et renvoie Retry-After lorsqu'il
+    // est occupé. Seules les lectures idempotentes sont rejouées automatiquement.
+    if (
+      method === 'GET' &&
+      response.status === 429 &&
+      attempt < MAX_GET_BUSY_RETRIES
+    ) {
+      const seconds = retryAfterSeconds(response.headers.get('retry-after')) ?? 1
+      if (response.body) await response.body.cancel().catch(() => undefined)
+      await wait(Math.min(Math.max(seconds, 1), 5) * 1_000)
+      continue
+    }
+    break
   }
 
   if (response.status === 401 && typeof window !== 'undefined') {
@@ -261,6 +287,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase()
+  return executeRequest<T>(path, init, method)
 }
 
 function queryString(params: Record<string, string | undefined>) {

@@ -65,7 +65,9 @@ export function DatasetProvider({ children }: { children: React.ReactNode }) {
     setLoading(true)
     setError(null)
     try {
-      setOverview(await api.overview())
+      const nextOverview = await api.overview()
+      setOverview(nextOverview)
+      setError(null)
       setRevision((value) => value + 1)
     } catch (cause) {
       if (cause instanceof ApiError && (cause.status === 404 || cause.status === 409)) {
