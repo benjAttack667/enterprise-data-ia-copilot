@@ -4,6 +4,7 @@ import { AlertCircle, Database, LoaderCircle, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { DatasetUploadButton } from '@/components/dataset-upload'
+import { MAX_UPLOAD_SIZE_LABEL, SUPPORTED_UPLOAD_FORMATS_LABEL } from '@/lib/upload-constraints'
 
 export function LoadingState({ label = 'Analyse des données…' }: { label?: string }) {
   return (
@@ -42,7 +43,8 @@ export function EmptyDatasetState() {
         </span>
         <p className="mt-4 text-sm font-semibold text-foreground">Aucun dataset actif</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          Importez un fichier CSV ou Excel pour lancer l’analyse Pandas et alimenter toutes les pages.
+          Importez un fichier {SUPPORTED_UPLOAD_FORMATS_LABEL} de {MAX_UPLOAD_SIZE_LABEL} maximum pour lancer
+          l’analyse Pandas et alimenter toutes les pages.
         </p>
         <DatasetUploadButton className="mt-4" />
       </div>

@@ -6,8 +6,9 @@ import { useDataset } from '@/components/dataset-provider'
 import { LogoutButton } from '@/components/logout-button'
 
 export function Header({ onMenuClick }: { onMenuClick: () => void }) {
-  const { overview, loading, uploading, error } = useDataset()
+  const { overview, loading, uploading, error, uploadError } = useDataset()
   const dataset = overview?.dataset
+  const visibleError = uploadError ?? error
 
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-background/90 px-4 backdrop-blur lg:px-6">
@@ -41,9 +42,9 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
         <LogoutButton />
 
         <span
-          title={error ?? undefined}
+          title={visibleError ?? undefined}
           className={`hidden items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset md:inline-flex ${
-            error
+            visibleError
               ? 'bg-destructive/10 text-destructive ring-destructive/20'
               : loading || uploading
                 ? 'bg-primary/10 text-primary ring-primary/20'
@@ -52,7 +53,7 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
                   : 'bg-muted text-muted-foreground ring-border'
           }`}
         >
-          {error ? (
+          {visibleError ? (
             <WifiOff className="size-3.5" />
           ) : loading || uploading ? (
             <LoaderCircle className="size-3.5 animate-spin" />
@@ -61,7 +62,7 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
           ) : (
             <Database className="size-3.5" />
           )}
-          {error ? 'Erreur' : loading || uploading ? 'Analyse…' : dataset ? 'Analyse prête' : 'Dataset requis'}
+          {visibleError ? 'Erreur' : loading || uploading ? 'Analyse…' : dataset ? 'Analyse prête' : 'Dataset requis'}
         </span>
       </div>
     </header>

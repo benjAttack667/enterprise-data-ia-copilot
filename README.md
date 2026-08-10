@@ -10,7 +10,9 @@ La démo publique est protégée par un mot de passe partagé. Elle doit être u
 
 ## Fonctionnalités
 
-- import sécurisé de fichiers CSV et XLSX (50 Mio par défaut, limite configurable) ;
+- import CSV/XLSX streamé et borné à 10 Mio, sans copie complète du fichier en mémoire ;
+- quotas configurables à la baisse sur les lignes, colonnes, cellules et archives Excel, avec plafonds de sécurité et limitation de fréquence ;
+- jauge réelle du stockage utilisé et rétention automatique des imports, rapports et événements ;
 - accès de démonstration protégé par une session HTTP-only signée et une API FastAPI non exposée directement au navigateur ;
 - profilage Pandas et KPI adaptés aux colonnes disponibles ;
 - score Data Quality explicable, valeurs manquantes, identifiants répétés, doublons signalés, types mixtes et valeurs extrêmes ;
@@ -54,7 +56,7 @@ enterprise-data-ia-copilot/
 └── README.md
 ```
 
-Le backend charge `marketing_leads.csv` au démarrage pour permettre une démonstration immédiate. Un import remplace le dataset actif pour l'ensemble des pages. L'historique SQLite persiste entre les redémarrages ; le dataset actif, lui, revient à l'échantillon par défaut au redémarrage.
+Le backend charge `marketing_leads.csv` au démarrage pour permettre une démonstration immédiate. Un import remplace le dataset actif pour l'ensemble des pages. L'historique SQLite et le dernier fichier importé persistent sur le volume ; le dataset actif, lui, revient à l'échantillon par défaut au redémarrage. Le fichier retenu n'est donc pas présenté comme actif tant qu'il n'existe pas de restauration explicite de ses métadonnées.
 
 ## Installation sous Windows
 
@@ -106,7 +108,17 @@ API_DOCS_ENABLED=true
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
 FRONTEND_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-MAX_UPLOAD_BYTES=52428800
+MAX_UPLOAD_BYTES=10485760
+MAX_DATASET_ROWS=100000
+MAX_DATASET_COLUMNS=200
+MAX_DATASET_CELLS=2000000
+MAX_XLSX_UNCOMPRESSED_BYTES=52428800
+MAX_XLSX_COMPRESSION_RATIO=100
+MAX_XLSX_ENTRIES=1000
+UPLOAD_RATE_LIMIT_REQUESTS=10
+UPLOAD_RATE_LIMIT_WINDOW_SECONDS=600
+MAX_REPORT_FILES=20
+MAX_HISTORY_ENTRIES=500
 ```
 
 `frontend/.env.local` :
@@ -201,6 +213,10 @@ Utilisez une variable partagée Railway pour `BACKEND_SERVICE_TOKEN` afin d'évi
 
 Un endpoint de santé minimal reste public sur `GET /api/health`. Toutes les autres routes FastAPI exigent le jeton `Authorization: Bearer <BACKEND_SERVICE_TOKEN>` ajouté par le proxy Next.js ; le navigateur ne possède jamais ce jeton. La documentation FastAPI est désactivée par défaut en production.
 
+Un garde ASGI vérifie le jeton de service et la taille du corps avant que FastAPI ne parse le JSON ou le multipart, y compris lorsque `Content-Length` est absent ou mensonger. Les corps métier sont bornés à 64 Kio ; l'import dispose de la limite fichier configurée plus une marge fixe pour l'enveloppe multipart.
+
+L'ingestion écrit chaque fichier par blocs dans un temporaire situé sur le même volume, calcule son empreinte SHA-256, valide sa taille et sa structure, puis l'active par remplacement atomique. La démo accepte au plus 10 imports par fenêtre de 10 minutes. Un verrou partagé autorise un seul import ou calcul analytique lourd à la fois par instance et renvoie `429` avec `Retry-After` lorsqu'elle est occupée. Elle conserve au plus le dernier fichier importé, les 20 rapports les plus récents et 500 événements métier ; un échec de restauration de ces quotas fait échouer l'écriture au lieu de laisser le stockage croître silencieusement. Les simples consultations `GET` ne remplissent plus l'historique SQLite.
+
 ## Logique d'analyse
 
 Le score Data Quality, borné entre 0 et 100, applique des pénalités déterministes : complétude (50 points), doublons ou identifiants répétés (25), valeurs extrêmes IQR (15), incohérences de type et valeurs infinies (10). Il sert à prioriser l'audit et ne remplace pas les règles métier.
@@ -219,7 +235,7 @@ npm run lint
 npm run build
 ```
 
-La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les imports CSV/XLSX, la sécurité des fichiers, l'authentification du service, le démarrage fail-closed, le fallback IA, les anomalies et les rapports.
+La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, le streaming CSV/XLSX, les seuils exacts de ressources, les flux sans longueur fiable, la protection des archives Excel, le rate limiting, la concurrence, les erreurs de stockage `507`, la rétention, l'authentification précoce du service, le démarrage fail-closed, le fallback IA, les anomalies et les rapports.
 
 ### Parcours E2E avec Robot Framework
 
@@ -273,6 +289,6 @@ Les captures ci-dessous proviennent de l'application Docker réelle avec le data
 
 ## Limites assumées
 
-Docker Compose rend l'exécution reproductible, mais ne remplace pas une plateforme SaaS multi-tenant : sauvegardes automatisées, rétention, quotas et orchestration distribuée restent à ajouter avant de traiter des données réelles.
+Docker Compose rend l'exécution reproductible, mais ne remplace pas une plateforme SaaS multi-tenant : sauvegardes automatisées, stockage objet, quotas distribués et orchestration asynchrone restent à ajouter avant de traiter des données réelles.
 
-Cette version implémente une barrière d'accès adaptée à une démonstration publique : mot de passe partagé, cookie HTTP-only signé et jeton privé entre Next.js et FastAPI. Elle ne fournit pas encore de comptes individuels, de rôles, d'isolation multi-tenant, de stockage objet cloud ni de file de tâches. Tous les utilisateurs autorisés partagent encore le même dataset actif. Les imports, rapports et événements SQLite sont conservés sans purge automatique ; en usage prolongé, il faut donc définir une politique de rétention ou nettoyer périodiquement `backend/data/uploads/`, `backend/reports/` et `backend/data/history.db`.
+Cette version implémente une barrière d'accès et des limites de ressources adaptées à une démonstration publique : mot de passe partagé, cookie HTTP-only signé, jeton privé entre Next.js et FastAPI, corps HTTP et ingestion bornés, sérialisation des calculs lourds et rétention automatique. Elle ne fournit pas encore de comptes individuels, de rôles, d'isolation multi-tenant, de stockage objet cloud ni de file de tâches. Tous les utilisateurs autorisés partagent encore le même dataset actif ; le compteur de fréquence et le verrou de calcul restent locaux à l'unique instance de démonstration. Les appels IA et les calculs analytiques ne disposent pas encore d'un quota distribué ou par utilisateur : le contrôle des coûts OpenAI constitue une étape de durcissement distincte avant une ouverture publique sans supervision.

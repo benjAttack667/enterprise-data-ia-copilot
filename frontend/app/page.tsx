@@ -13,6 +13,7 @@ import {
 } from '@/components/charts'
 import { EmptyDatasetState, ErrorState, LoadingState } from '@/components/async-state'
 import { useDataset } from '@/components/dataset-provider'
+import { StorageUsageCard } from '@/components/storage-usage-card'
 
 function formatUpdatedAt(value?: string) {
   if (!value) return 'analyse courante'
@@ -65,6 +66,12 @@ export default function OverviewPage() {
         <AiSummaryCard summary={overview.summary} />
         <RecommendationList recommendations={overview.recommendations} />
       </section>
+
+      {overview.storage ? (
+        <section aria-label="Capacité du workspace" className="mt-4">
+          <StorageUsageCard storage={overview.storage} />
+        </section>
+      ) : null}
     </div>
   )
 }

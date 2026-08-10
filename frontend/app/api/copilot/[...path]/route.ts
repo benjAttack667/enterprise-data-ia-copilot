@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { SESSION_COOKIE_NAME, verifySessionToken } from '@/lib/session'
+import { MAX_UPLOAD_REQUEST_BYTES, MAX_UPLOAD_SIZE_LABEL } from '@/lib/upload-constraints'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -59,6 +60,26 @@ async function forward(request: NextRequest, context: ProxyContext) {
   const allowedMethods = ALLOWED_BACKEND_ROUTES.get(backendPath)
   if (!allowedMethods) return jsonError('Ressource introuvable.', 404)
   if (!allowedMethods.has(request.method)) return jsonError('Méthode non autorisée.', 405)
+
+  if (backendPath === '/api/upload') {
+    const contentLengthHeader = request.headers.get('content-length')
+    if (contentLengthHeader !== null) {
+      // Content-Length est un entier décimal HTTP. Éviter Number() empêche
+      // d'accepter silencieusement des syntaxes comme 1e9 ou 0x100.
+      if (!/^\d+$/.test(contentLengthHeader)) {
+        return jsonError('Taille de requête invalide.', 400)
+      }
+      if (BigInt(contentLengthHeader) > BigInt(MAX_UPLOAD_REQUEST_BYTES)) {
+        return jsonError(
+          `Fichier refusé : la limite d’import est de ${MAX_UPLOAD_SIZE_LABEL}.`,
+          413,
+        )
+      }
+    }
+    // Garde précoce uniquement : une requête HTTP en transfert segmenté peut
+    // omettre Content-Length. FastAPI doit donc conserver sa limite de flux,
+    // qui reste l'autorité sans que le BFF ne bufferise le multipart.
+  }
 
   // La liste blanche empêche tout path traversal et évite d'exposer
   // automatiquement de futurs endpoints FastAPI au navigateur.
