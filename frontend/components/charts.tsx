@@ -68,29 +68,73 @@ export function QualityByColumnChart({ data }: { data: QualityPoint[] }) {
 
 export function MissingValuesChart({ data }: { data: MissingPoint[] }) {
   if (!data.length) return <ChartEmpty />
-  const normalized = data.map((point) => ({ ...point, missing: point.missing ?? point.missing_rate ?? 0 }))
+  const usesRate = data.some(
+    (point) => typeof point.missing_rate === 'number' && Number.isFinite(point.missing_rate),
+  )
+  const normalized = data.map((point) => ({
+    column: point.column,
+    value: usesRate ? point.missing_rate : point.missing,
+  }))
+  if (!normalized.some((point) => typeof point.value === 'number' && Number.isFinite(point.value))) {
+    return <ChartEmpty />
+  }
+  const valueLabel = usesRate ? 'Taux de valeurs manquantes' : 'Valeurs manquantes'
   return (
     <ResponsiveContainer width="100%" height={260}>
       <BarChart data={normalized} layout="vertical" margin={{ top: 4, right: 16, left: 24, bottom: 0 }}>
         <CartesianGrid horizontal={false} stroke="var(--border)" strokeDasharray="4 4" />
-        <XAxis type="number" unit="%" {...axisProps} />
+        <XAxis
+          type="number"
+          unit={usesRate ? '%' : undefined}
+          domain={usesRate ? [0, 100] : undefined}
+          allowDecimals={usesRate}
+          {...axisProps}
+        />
         <YAxis type="category" dataKey="column" width={96} {...axisProps} />
         <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'var(--muted)' }} />
-        <Bar dataKey="missing" name="Valeurs manquantes (%)" fill="var(--chart-1)" radius={[0, 6, 6, 0]} maxBarSize={22} />
+        <Bar dataKey="value" name={valueLabel} unit={usesRate ? '%' : undefined} fill="var(--chart-1)" radius={[0, 6, 6, 0]} maxBarSize={22} />
       </BarChart>
     </ResponsiveContainer>
   )
 }
 
-export function OverviewTrendChart({ data }: { data: TrendPoint[] }) {
+export function OverviewTrendChart({
+  data,
+  seriesKind,
+}: {
+  data: TrendPoint[]
+  seriesKind?: string
+}) {
   if (!data.length) return <ChartEmpty />
   const normalized = data.map((point, index) => {
-    const numericKey = Object.keys(point).find((key) => key !== 'label' && key !== 'date' && key !== 'period' && typeof point[key] === 'number')
+    const numericKey = Object.keys(point).find(
+      (key) =>
+        key !== 'label' &&
+        key !== 'date' &&
+        key !== 'period' &&
+        typeof point[key] === 'number' &&
+        Number.isFinite(point[key]),
+    )
+    const candidate = point.value ?? (numericKey ? point[numericKey] : null)
     return {
       label: point.label ?? point.date ?? point.period ?? String(index + 1),
-      value: point.value ?? (numericKey ? Number(point[numericKey]) : 0),
+      value: typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : null,
     }
   })
+  if (!normalized.some((point) => point.value !== null)) return <ChartEmpty />
+  if (seriesKind?.toLowerCase().includes('categor')) {
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart data={normalized} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+          <CartesianGrid vertical={false} stroke="var(--border)" strokeDasharray="4 4" />
+          <XAxis dataKey="label" {...axisProps} />
+          <YAxis {...axisProps} allowDecimals={false} />
+          <Tooltip contentStyle={tooltipStyle} cursor={{ fill: 'var(--muted)' }} />
+          <Bar dataKey="value" name="Nombre de lignes" fill="var(--chart-1)" radius={[6, 6, 0, 0]} maxBarSize={44} />
+        </BarChart>
+      </ResponsiveContainer>
+    )
+  }
   return (
     <ResponsiveContainer width="100%" height={260}>
       <AreaChart data={normalized} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
@@ -154,6 +198,10 @@ export function DashboardChart({
   const first = data[0]
   const labelKey = 'label' in first ? 'label' : dimension
   const valueKey = 'value' in first ? 'value' : metric
+  const hasNumericData = data.some(
+    (point) => typeof point[valueKey] === 'number' && Number.isFinite(point[valueKey]),
+  )
+  if (!hasNumericData) return <ChartEmpty />
 
   if (chartType === 'pie') {
     return (
@@ -168,7 +216,35 @@ export function DashboardChart({
     )
   }
 
-  if (chartType === 'line' || chartType === 'area') {
+  if (chartType === 'area') {
+    return (
+      <ResponsiveContainer width="100%" height={360}>
+        <AreaChart data={data} margin={{ top: 12, right: 12, left: 0, bottom: 24 }}>
+          <defs>
+            <linearGradient id="dashboardAreaFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.28} />
+              <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid vertical={false} stroke="var(--border)" strokeDasharray="4 4" />
+          <XAxis dataKey={labelKey} {...axisProps} angle={-10} textAnchor="end" height={48} />
+          <YAxis {...axisProps} />
+          <Tooltip contentStyle={tooltipStyle} />
+          <Area
+            type="monotone"
+            dataKey={valueKey}
+            name={metric}
+            stroke="var(--chart-1)"
+            strokeWidth={2}
+            fill="url(#dashboardAreaFill)"
+            connectNulls={false}
+          />
+        </AreaChart>
+      </ResponsiveContainer>
+    )
+  }
+
+  if (chartType === 'line') {
     return (
       <ResponsiveContainer width="100%" height={360}>
         <LineChart data={data} margin={{ top: 12, right: 12, left: 0, bottom: 24 }}>

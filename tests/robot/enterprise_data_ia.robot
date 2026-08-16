@@ -71,7 +71,8 @@ ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
     Wait Until Page Contains    Qualité par colonne    30s
     Page Should Contain    component_id
     Page Should Contain    supplier
-    Page Should Contain    missing_values
+    Page Should Contain    Type sémantique
+    Page Should Contain    Valeurs manquantes
     Page Should Contain    2 valeur(s) manquante(s)
 
 04 - Configurer le dashboard métier
@@ -90,8 +91,9 @@ ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
 05 - Exécuter IsolationForest
     Click Link    Anomalies
     Wait Until Location Is    ${FRONTEND_URL}/anomalies    20s
-    Wait Until Page Contains    Anomalies détectées    30s
+    Wait Until Page Contains    Lignes atypiques signalées    30s
     Page Should Contain    Lignes signalées
+    Page Should Contain    ne sont pas automatiquement des erreurs
 
 06 - Utiliser le fallback de l'assistant IA
     Click Link    Assistant IA

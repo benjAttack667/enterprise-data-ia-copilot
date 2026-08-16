@@ -23,6 +23,32 @@ function formatUpdatedAt(value?: string) {
     : date.toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+function seriesCopy(kind?: string) {
+  const normalized = kind?.toLowerCase()
+  if (normalized?.includes('categor')) {
+    return {
+      title: 'Répartition principale',
+      description: 'Distribution calculée automatiquement sur le dataset actif',
+    }
+  }
+  if (normalized === 'empty') {
+    return {
+      title: 'Série principale',
+      description: 'Aucune dimension exploitable pour cette visualisation',
+    }
+  }
+  if (normalized?.includes('tempor') || normalized?.includes('time')) {
+    return {
+      title: 'Tendance métier',
+      description: 'Série temporelle calculée automatiquement sur le dataset actif',
+    }
+  }
+  return {
+    title: 'Tendance métier',
+    description: 'Série calculée automatiquement sur le dataset actif',
+  }
+}
+
 export default function OverviewPage() {
   const { overview, loading, error, refresh } = useDataset()
 
@@ -31,6 +57,9 @@ export default function OverviewPage() {
   if (!overview) return <EmptyDatasetState />
 
   const { dataset } = overview
+  const trendSeriesKind =
+    overview.trend_meta?.series_kind ?? overview.series_kind ?? overview.trend_series_kind
+  const trendCopy = seriesCopy(trendSeriesKind)
   return (
     <div className="mx-auto max-w-7xl">
       <PageHeader
@@ -44,8 +73,8 @@ export default function OverviewPage() {
 
       <section className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <ChartCard title="Tendance métier" description="Série calculée automatiquement sur le dataset actif">
-            <OverviewTrendChart data={overview.trend} />
+          <ChartCard title={trendCopy.title} description={trendCopy.description}>
+            <OverviewTrendChart data={overview.trend} seriesKind={trendSeriesKind} />
           </ChartCard>
         </div>
         <ChartCard title="Répartition par catégorie" description="Principales catégories détectées">

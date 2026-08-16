@@ -24,7 +24,7 @@ export type DatasetInfo = {
 export type Kpi = {
   id?: string
   label: string
-  value: string | number
+  value: string | number | null
   unit?: string
   hint?: string
   delta?: { value: string; direction: 'up' | 'down' }
@@ -45,8 +45,8 @@ export type QualityPoint = {
 
 export type MissingPoint = {
   column: string
-  missing?: number
-  missing_rate?: number
+  missing?: number | null
+  missing_rate?: number | null
 }
 
 export type CategoryPoint = {
@@ -58,8 +58,16 @@ export type TrendPoint = {
   label?: string
   date?: string
   period?: string
-  value?: number
-  [key: string]: string | number | undefined
+  value?: number | null
+  [key: string]: string | number | null | undefined
+}
+
+export type SeriesMetadata = {
+  series_kind?: 'temporal' | 'categorical' | 'empty' | string
+  missing_dimension_count?: number
+  invalid_dimension_count?: number
+  dimension_parse_rate?: number | null
+  missing_label?: string
 }
 
 export type StorageUsage = {
@@ -92,6 +100,9 @@ export type OverviewResponse = {
   missing_distribution: MissingPoint[]
   category_breakdown: CategoryPoint[]
   trend: TrendPoint[]
+  series_kind?: 'temporal' | 'categorical' | 'empty' | string
+  trend_series_kind?: SeriesMetadata['series_kind']
+  trend_meta?: SeriesMetadata
   storage?: StorageUsage
 }
 
@@ -106,15 +117,21 @@ export type QualityProblem = {
 
 export type ColumnQuality = {
   column: string
-  dtype?: string
-  missing?: number
-  missing_count?: number
-  missing_rate?: number
-  unique?: number
-  unique_count?: number
-  duplicate_impact?: number
-  type_consistency?: number
-  score?: number
+  dtype?: string | null
+  semantic_type?: string | null
+  inferred_type?: string | null
+  parse_rate?: number | null
+  blank_count?: number | null
+  missing?: number | null
+  missing_count?: number | null
+  missing_rate?: number | null
+  unique?: number | null
+  unique_count?: number | null
+  invalid_count?: number | null
+  invalid_numeric_count?: number | null
+  duplicate_impact?: number | null
+  type_consistency?: number | null
+  score?: number | null
   status?: string
   issues?: string[]
   severity?: Severity
@@ -141,6 +158,11 @@ export type DashboardResponse = {
   chart_type: 'bar' | 'line' | 'area' | 'pie' | string
   data: DashboardDatum[]
   kpis: Kpi[]
+  series_kind?: SeriesMetadata['series_kind']
+  missing_dimension_count?: number
+  invalid_dimension_count?: number
+  dimension_parse_rate?: number | null
+  missing_label?: string
 }
 
 export type AiResponse = {
@@ -158,9 +180,13 @@ export type AiResponse = {
 export type AnomaliesResponse = {
   applicable?: boolean
   count: number
+  total_count?: number
+  returned_count?: number
+  truncated?: boolean
   rate: number
   rows: Array<Record<string, unknown>>
   numeric_columns?: string[]
+  excluded_identifier_columns?: string[]
   method?: string
   message?: string
   parameters?: Record<string, string | number | null>

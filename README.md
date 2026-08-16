@@ -14,10 +14,10 @@ La démo publique est protégée par un mot de passe partagé. Elle doit être u
 - quotas configurables à la baisse sur les lignes, colonnes, cellules et archives Excel, avec plafonds de sécurité et limitation de fréquence ;
 - jauge réelle du stockage utilisé et rétention automatique des imports, rapports et événements ;
 - accès de démonstration protégé par une session HTTP-only signée et une API FastAPI non exposée directement au navigateur ;
-- profilage Pandas et KPI adaptés aux colonnes disponibles ;
-- score Data Quality explicable, valeurs manquantes, identifiants répétés, doublons signalés, types mixtes et valeurs extrêmes ;
+- profilage Pandas avec types sémantiques, KPI adaptés et conversion analytique non destructive des nombres stockés en texte ;
+- score Data Quality explicable, chaînes vides, valeurs manquantes, dates invalides ou ambiguës, identifiants répétés, doublons signalés, types mixtes et valeurs extrêmes ;
 - dashboard Recharts configurable par dimension, mesure et agrégation ;
-- détection multivariée avec `IsolationForest` et `random_state=42` ;
+- détection multivariée avec `IsolationForest`, exclusion des identifiants, gestion robuste des valeurs absentes et `random_state=42` ;
 - synthèse et questions en langage naturel via l'API OpenAI ;
 - fallback local déterministe lorsqu'aucune clé OpenAI n'est fournie ou que l'API est indisponible ;
 - génération et téléchargement de rapports Markdown ou HTML ;
@@ -219,9 +219,11 @@ L'ingestion écrit chaque fichier par blocs dans un temporaire situé sur le mê
 
 ## Logique d'analyse
 
-Le score Data Quality, borné entre 0 et 100, applique des pénalités déterministes : complétude (50 points), doublons ou identifiants répétés (25), valeurs extrêmes IQR (15), incohérences de type et valeurs infinies (10). Il sert à prioriser l'audit et ne remplace pas les règles métier.
+Le score Data Quality, borné entre 0 et 100, applique des pénalités déterministes : complétude (50 points), doublons ou identifiants répétés (25), valeurs extrêmes IQR (15), incohérences de type, dates invalides et valeurs infinies (10). Le profilage conserve le type Pandas d'origine et expose aussi un type sémantique, un taux de conversion et le nombre de valeurs invalides. Les libellés métier `NA`, `N/A` et `NULL` sont préservés ; seules les cellules nulles, vides ou composées d'espaces sont traitées comme absentes. Aucune correction n'est appliquée au fichier source.
 
-Pour les anomalies, les colonnes numériques constantes sont exclues, les valeurs manquantes sont imputées par la médiane, puis les variables sont standardisées avant `IsolationForest`. Le score affiché classe les observations ; il ne représente ni une probabilité ni une causalité.
+Les dates ISO, les objets datetime et les années explicites sont normalisés en UTC pour les agrégations. Un format français `JJ/MM/AAAA` est accepté lorsque la convention peut être déduite sans ambiguïté de la colonne ; les formats ambigus ou invalides sont signalés au lieu d'être interprétés silencieusement. Une absence d'agrégat reste `null` dans l'API et s'affiche `—`, jamais comme un faux zéro.
+
+Pour les anomalies, les identifiants et colonnes constantes sont exclus. Les colonnes numériques natives ou textuelles avec au moins 90 % de valeurs convertibles sont retenues ; les valeurs manquantes sont imputées par la médiane et représentées par un indicateur d'absence. Les amplitudes sont bornées avant standardisation afin de supporter les valeurs finies extrêmes, puis `IsolationForest` s'exécute avec une graine fixe. L'API renvoie au plus les 100 observations les mieux classées, tout en conservant le total réel. Le score affiché classe les observations ; il ne représente ni une probabilité ni une causalité.
 
 ## Tests et qualité
 
@@ -235,7 +237,7 @@ npm run lint
 npm run build
 ```
 
-La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, le streaming CSV/XLSX, les seuils exacts de ressources, les flux sans longueur fiable, la protection des archives Excel, le rate limiting, la concurrence, les erreurs de stockage `507`, la rétention, l'authentification précoce du service, le démarrage fail-closed, le fallback IA, les anomalies et les rapports.
+La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les types sémantiques, les dates UTC/françaises/ambiguës, la sérialisation JSON stricte des absences, IsolationForest sur nombres textuels et valeurs extrêmes, le streaming CSV/XLSX, les seuils exacts de ressources, les flux sans longueur fiable, la protection des archives Excel, le rate limiting, la concurrence, les erreurs de stockage `507`, la rétention, l'authentification précoce du service, le démarrage fail-closed, le fallback IA et les rapports.
 
 ### Parcours E2E avec Robot Framework
 

@@ -1,5 +1,6 @@
 import { ArrowDownRight, ArrowUpRight } from 'lucide-react'
 import { Card } from '@/components/ui/card'
+import { formatDataValue, hasDisplayValue } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { Kpi } from '@/lib/data'
 
@@ -14,6 +15,7 @@ const toneAccent: Record<NonNullable<Kpi['tone']>, string> = {
 export function KpiCard({ kpi }: { kpi: Kpi }) {
   const tone = kpi.tone ?? 'default'
   const positive = kpi.delta?.direction === 'up'
+  const value = formatDataValue(kpi.value, 2)
 
   return (
     <Card className="relative gap-0 overflow-hidden p-5">
@@ -21,9 +23,9 @@ export function KpiCard({ kpi }: { kpi: Kpi }) {
       <p className="text-sm font-medium text-muted-foreground">{kpi.label}</p>
       <div className="mt-2 flex items-baseline gap-2">
         <span className="font-mono text-2xl font-semibold tracking-tight text-foreground">
-          {String(kpi.value)}{kpi.unit ? <span className="ml-1 text-sm">{kpi.unit}</span> : null}
+          {value}{kpi.unit && hasDisplayValue(kpi.value) ? <span className="ml-1 text-sm">{kpi.unit}</span> : null}
         </span>
-        {kpi.delta ? (
+        {kpi.delta && hasDisplayValue(kpi.value) ? (
           <span
             className={cn(
               'inline-flex items-center gap-0.5 text-xs font-medium',

@@ -31,9 +31,14 @@ def test_health_and_default_marketing_overview(client: TestClient) -> None:
         "quality_by_column",
         "missing_distribution",
         "category_breakdown",
+        "category_missing_label",
         "trend",
+        "series_kind",
+        "trend_series_kind",
+        "trend_meta",
         "storage",
     }
+    assert payload["series_kind"] == payload["trend_meta"]["series_kind"]
     assert payload["storage"]["uploads"]["max_files"] == 1
     assert payload["storage"]["reports"]["max_files"] == 20
     assert payload["storage"]["history"]["max_entries"] == 500
