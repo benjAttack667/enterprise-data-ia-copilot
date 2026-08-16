@@ -9,6 +9,12 @@ import pandas as pd
 
 from .dataset_store import DatasetSnapshot
 from .anomalies import detect_anomalies
+from .profiling import (
+    ColumnProfile,
+    category_values,
+    profile_column,
+    profile_dataframe,
+)
 from .quality import audit_data_quality
 from .serialization import finite_number
 
@@ -19,13 +25,28 @@ AGGREGATIONS = ("sum", "mean", "median", "min", "max", "count")
 ROW_COUNT_METRIC = "__row_count__"
 
 
-def _numeric_columns(df: pd.DataFrame) -> list[str]:
-    return [str(column) for column in df.select_dtypes(include="number").columns]
+def _numeric_columns(
+    df: pd.DataFrame,
+    profiles: dict[str, ColumnProfile] | None = None,
+) -> list[str]:
+    profiles = profiles or profile_dataframe(df)
+    return [
+        str(column)
+        for column in df.columns
+        if profiles[str(column)].semantic_type == "number"
+    ]
 
 
-def _dimension_columns(df: pd.DataFrame) -> list[str]:
-    numeric = set(df.select_dtypes(include="number").columns)
-    dimensions = [str(column) for column in df.columns if column not in numeric]
+def _dimension_columns(
+    df: pd.DataFrame,
+    profiles: dict[str, ColumnProfile] | None = None,
+) -> list[str]:
+    profiles = profiles or profile_dataframe(df)
+    dimensions = [
+        str(column)
+        for column in df.columns
+        if profiles[str(column)].semantic_type != "number"
+    ]
     if dimensions:
         return dimensions
     # Un dataset entièrement numérique doit rester visualisable. Le backend
@@ -52,13 +73,7 @@ def _pick_metric(options: list[str]) -> str:
 
 
 def _looks_temporal(name: str, series: pd.Series) -> bool:
-    lowered = name.lower()
-    if any(token in lowered for token in ("date", "month", "year", "time", "created", "updated")):
-        return True
-    if not (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)):
-        return False
-    parsed = pd.to_datetime(series, errors="coerce", format="mixed")
-    return bool(parsed.notna().mean() >= 0.8)
+    return profile_column(name, series).semantic_type == "datetime"
 
 
 def _aggregate(
@@ -66,42 +81,49 @@ def _aggregate(
     dimension: str,
     metric: str,
     aggregation: str,
-) -> tuple[list[dict[str, Any]], str]:
-    source_columns = [dimension] if metric == ROW_COUNT_METRIC else list(
-        dict.fromkeys([dimension, metric])
-    )
-    working = df[source_columns].copy()
-    metric_key = metric
-    # Dimension et métrique peuvent légitimement être la même colonne dans un
-    # dataset numérique. Une colonne technique empêche Pandas de renvoyer un
-    # DataFrame lors de la sélection de la métrique.
-    if metric != ROW_COUNT_METRIC and metric == dimension:
-        metric_key = "__metric_value"
-        working[metric_key] = df[metric]
-    temporal = _looks_temporal(dimension, working[dimension])
-    dimension_key = dimension
+) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
+    dimension_profile = profile_column(dimension, df[dimension])
+    working = pd.DataFrame(index=df.index)
+    temporal = dimension_profile.semantic_type == "datetime"
+    missing_label: str | None = None
     if temporal:
-        parsed = pd.to_datetime(working[dimension], errors="coerce", format="mixed")
-        working = working.loc[parsed.notna()].copy()
-        parsed = parsed.loc[parsed.notna()]
+        parsed = dimension_profile.temporal
+        assert parsed is not None
+        valid_dates = parsed.notna()
+        working = working.loc[valid_dates].copy()
+        parsed = parsed.loc[valid_dates]
         # Le mois donne une tendance stable et lisible pour les dates journalières.
-        working["__dimension"] = parsed.dt.to_period("M").astype(str)
-        dimension_key = "__dimension"
+        working["__dimension"] = (
+            parsed.dt.tz_convert("UTC")
+            .dt.tz_localize(None)
+            .dt.to_period("M")
+            .astype(str)
+        )
     else:
-        working[dimension] = working[dimension].fillna("Valeur manquante").astype(str)
+        labels, missing_label = category_values(df[dimension])
+        working["__dimension"] = labels
 
-    if metric == ROW_COUNT_METRIC:
-        grouped = working.groupby(dimension_key, dropna=False).size()
-    elif aggregation == "count":
-        grouped = working.groupby(dimension_key, dropna=False)[metric_key].count()
-    else:
-        working[metric_key] = pd.to_numeric(
-            working[metric_key], errors="coerce"
-        ).replace(
+    metric_key = "__metric_value"
+    if metric != ROW_COUNT_METRIC:
+        metric_profile = profile_column(metric, df[metric])
+        numeric_metric = metric_profile.numeric
+        if numeric_metric is None:
+            numeric_metric = pd.to_numeric(df[metric], errors="coerce")
+        working[metric_key] = numeric_metric.reindex(working.index).replace(
             [np.inf, -np.inf], np.nan
         )
-        grouped_object = working.groupby(dimension_key, dropna=False)[metric_key]
-        grouped = getattr(grouped_object, aggregation)()
+
+    if metric == ROW_COUNT_METRIC:
+        grouped = working.groupby("__dimension", dropna=False).size()
+    elif aggregation == "count":
+        grouped = working.groupby("__dimension", dropna=False)[metric_key].count()
+    else:
+        grouped_object = working.groupby("__dimension", dropna=False)[metric_key]
+        grouped = (
+            grouped_object.sum(min_count=1)
+            if aggregation == "sum"
+            else getattr(grouped_object, aggregation)()
+        )
 
     if temporal:
         grouped = grouped.sort_index()
@@ -112,10 +134,22 @@ def _aggregate(
         for label, value in grouped.items()
         if pd.notna(label)
     ]
-    return data, "line" if temporal else "bar"
+    series_kind = "temporal" if temporal else "categorical"
+    metadata = {
+        "series_kind": series_kind,
+        "missing_dimension_count": int(dimension_profile.normalized.isna().sum()),
+        "invalid_dimension_count": dimension_profile.invalid_count,
+        "dimension_parse_rate": dimension_profile.parse_rate,
+        "missing_label": missing_label,
+    }
+    return data, "line" if temporal else "bar", metadata
 
 
-def _contextual_kpis(df: pd.DataFrame, quality_score: float) -> list[dict[str, Any]]:
+def _contextual_kpis(
+    df: pd.DataFrame,
+    quality_score: float,
+    profiles: dict[str, ColumnProfile] | None = None,
+) -> list[dict[str, Any]]:
     """Produit des KPI vrais en privilégiant les colonnes métier reconnues."""
 
     kpis: list[dict[str, Any]] = [
@@ -127,22 +161,29 @@ def _contextual_kpis(df: pd.DataFrame, quality_score: float) -> list[dict[str, A
             "tone": "neutral",
         }
     ]
+    profiles = profiles or profile_dataframe(df)
     lowered = {str(column).lower(): str(column) for column in df.columns}
     if "revenue" in lowered:
-        revenue = pd.to_numeric(df[lowered["revenue"]], errors="coerce").replace(
-            [np.inf, -np.inf], np.nan
-        )
+        revenue_profile = profiles[lowered["revenue"]]
+        revenue = revenue_profile.numeric
+        if revenue is None:
+            revenue = pd.to_numeric(df[lowered["revenue"]], errors="coerce")
+        revenue = revenue.replace([np.inf, -np.inf], np.nan)
         kpis.append(
             {
                 "id": "revenue",
                 "label": "Revenu total",
-                "value": finite_number(revenue.sum()),
+                "value": finite_number(revenue.sum(min_count=1)),
                 "hint": "Somme de la colonne revenue",
                 "tone": "success",
             }
         )
     if "conversion" in lowered:
-        conversion = pd.to_numeric(df[lowered["conversion"]], errors="coerce")
+        conversion_profile = profiles[lowered["conversion"]]
+        conversion = conversion_profile.numeric
+        if conversion is None:
+            conversion = pd.to_numeric(df[lowered["conversion"]], errors="coerce")
+        conversion = conversion.replace([np.inf, -np.inf], np.nan)
         conversion_mean = conversion.mean()
         # Les colonnes de conversion sont couramment encodées soit entre 0 et
         # 1, soit directement entre 0 et 100. On ne multiplie que le premier cas.
@@ -163,18 +204,25 @@ def _contextual_kpis(df: pd.DataFrame, quality_score: float) -> list[dict[str, A
             }
         )
     elif "margin" in lowered:
-        margin = pd.to_numeric(df[lowered["margin"]], errors="coerce")
+        margin_profile = profiles[lowered["margin"]]
+        margin = margin_profile.numeric
+        if margin is None:
+            margin = pd.to_numeric(df[lowered["margin"]], errors="coerce")
+        margin = margin.replace([np.inf, -np.inf], np.nan)
         kpis.append(
             {
                 "id": "margin",
                 "label": "Marge totale",
-                "value": finite_number(margin.sum()),
+                "value": finite_number(margin.sum(min_count=1)),
                 "hint": "Somme de la colonne margin",
                 "tone": "success",
             }
         )
     if "score" in lowered:
-        score = pd.to_numeric(df[lowered["score"]], errors="coerce")
+        score_profile = profiles[lowered["score"]]
+        score = score_profile.numeric
+        if score is None:
+            score = pd.to_numeric(df[lowered["score"]], errors="coerce")
         kpis.append(
             {
                 "id": "average_score",
@@ -185,7 +233,10 @@ def _contextual_kpis(df: pd.DataFrame, quality_score: float) -> list[dict[str, A
             }
         )
     elif "progress" in lowered:
-        progress = pd.to_numeric(df[lowered["progress"]], errors="coerce")
+        progress_profile = profiles[lowered["progress"]]
+        progress = progress_profile.numeric
+        if progress is None:
+            progress = pd.to_numeric(df[lowered["progress"]], errors="coerce")
         kpis.append(
             {
                 "id": "average_progress",
@@ -290,8 +341,9 @@ def build_dashboard(
 ) -> dict[str, Any]:
     """Construit une série agrégée contrôlée par trois paramètres explicites."""
 
-    dimensions = _dimension_columns(dataframe)
-    numeric = _numeric_columns(dataframe)
+    profiles = profile_dataframe(dataframe)
+    dimensions = _dimension_columns(dataframe, profiles)
+    numeric = _numeric_columns(dataframe, profiles)
     metric_options = [ROW_COUNT_METRIC, *numeric]
     if not dimensions:
         raise ValueError("Aucune colonne ne peut être utilisée comme dimension.")
@@ -307,7 +359,7 @@ def build_dashboard(
         raise ValueError(f"Métrique inconnue : {selected_metric}")
     if selected_aggregation not in AGGREGATIONS:
         raise ValueError(f"Agrégation inconnue : {selected_aggregation}")
-    data, chart_type = _aggregate(
+    data, chart_type, series_metadata = _aggregate(
         dataframe, selected_dimension, selected_metric, selected_aggregation
     )
     quality_score = audit_data_quality(dataframe)["score"]
@@ -320,7 +372,8 @@ def build_dashboard(
         "aggregation_options": list(AGGREGATIONS),
         "chart_type": chart_type,
         "data": data,
-        "kpis": _contextual_kpis(dataframe, quality_score),
+        "kpis": _contextual_kpis(dataframe, quality_score, profiles),
+        **series_metadata,
     }
 
 
@@ -332,31 +385,45 @@ def build_overview(
     """Assemble le contrat complet de la page Overview."""
 
     df = snapshot.dataframe
+    profiles = profile_dataframe(df)
     quality = quality or audit_data_quality(df)
     anomalies = anomalies or detect_anomalies(df)
     columns = quality["columns"]
-    dimensions = _dimension_columns(df)
+    dimensions = _dimension_columns(df, profiles)
     dimension = _pick_dimension(df, dimensions) if dimensions else None
     category_breakdown: list[dict[str, Any]] = []
+    category_missing_label: str | None = None
     if dimension:
-        counts = df[dimension].fillna("Valeur manquante").astype(str).value_counts().head(8)
+        category_labels, category_missing_label = category_values(df[dimension])
+        counts = category_labels.value_counts().head(8)
         category_breakdown = [
             {"name": str(name), "value": int(value)} for name, value in counts.items()
         ]
 
     temporal_options = [
-        column for column in dimensions if _looks_temporal(column, df[column])
+        column
+        for column in dimensions
+        if profiles[column].semantic_type == "datetime"
     ]
-    metric = _pick_metric(_numeric_columns(df))
+    metric = _pick_metric(_numeric_columns(df, profiles))
+    trend_metadata: dict[str, Any] = {
+        "series_kind": "categorical",
+        "missing_dimension_count": 0,
+        "invalid_dimension_count": 0,
+        "dimension_parse_rate": 100.0,
+        "missing_label": None,
+    }
     if temporal_options:
-        trend, _ = _aggregate(
+        trend, _, trend_metadata = _aggregate(
             df,
             temporal_options[0],
             metric,
             "count" if metric == ROW_COUNT_METRIC else "sum",
         )
     elif dimension:
-        trend, _ = _aggregate(df, dimension, ROW_COUNT_METRIC, "count")
+        trend, _, trend_metadata = _aggregate(
+            df, dimension, ROW_COUNT_METRIC, "count"
+        )
     else:
         trend = []
 
@@ -387,5 +454,9 @@ def build_overview(
             if column["missing_count"] > 0
         ],
         "category_breakdown": category_breakdown,
+        "category_missing_label": category_missing_label,
         "trend": trend,
+        "series_kind": trend_metadata["series_kind"],
+        "trend_series_kind": trend_metadata["series_kind"],
+        "trend_meta": trend_metadata,
     }

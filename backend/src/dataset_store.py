@@ -212,12 +212,21 @@ def _read_dataframe_path(
             max_rows_by_cells = limits.max_cells // len(headers)
             read_limit = min(limits.max_rows, max_rows_by_cells)
             try:
-                dataframe = pd.read_csv(path, nrows=read_limit + 1)
+                dataframe = pd.read_csv(
+                    path,
+                    nrows=read_limit + 1,
+                    # Les libellés métier comme "NA" ou "NULL" doivent rester
+                    # des valeurs brutes. Le profilage sémantique normalise
+                    # ensuite uniquement les cellules vides ou composées
+                    # d'espaces, de façon identique dans toutes les analyses.
+                    keep_default_na=False,
+                )
             except UnicodeDecodeError:
                 dataframe = pd.read_csv(
                     path,
                     encoding="latin-1",
                     nrows=read_limit + 1,
+                    keep_default_na=False,
                 )
         elif suffix == ".xlsx":
             rows, columns, _headers = _xlsx_shape_and_headers(path, limits)
@@ -227,6 +236,7 @@ def _read_dataframe_path(
                     binary_stream,
                     engine="openpyxl",
                     nrows=limits.max_rows + 1,
+                    keep_default_na=False,
                 )
         else:
             raise DatasetError("Format non pris en charge. Utilisez un fichier CSV ou XLSX.")

@@ -53,6 +53,10 @@ def _aggregate_context(
             {
                 "column": column["column"],
                 "dtype": column["dtype"],
+                "inferred_type": column.get("inferred_type"),
+                "parse_rate": column.get("parse_rate"),
+                "invalid_count": column.get("invalid_count", 0),
+                "blank_count": column.get("blank_count", 0),
                 "missing_rate": column["missing_rate"],
                 "unique_count": column["unique_count"],
             }
@@ -160,6 +164,18 @@ class AIService:
                         "La détection d'anomalies n'est pas applicable : "
                         f"{anomalies.get('message', 'les données sont insuffisantes.')}"
                     )
+            elif any(token in lowered for token in ("date", "invalide", "format")):
+                text = (
+                    f"L'audit a relevé {summary.get('invalid_date_count', 0)} date(s) "
+                    f"invalide(s) et {summary.get('invalid_semantic_count', 0)} "
+                    "valeur(s) non conformes au type sémantique inféré."
+                )
+            elif any(token in lowered for token in ("type", "schéma", "schema")):
+                schema = ", ".join(
+                    f"{column['column']} ({column.get('inferred_type') or column['dtype']})"
+                    for column in quality["columns"][:12]
+                )
+                text = f"Types sémantiques détectés : {schema}."
             elif any(token in lowered for token in ("revenu", "revenue", "chiffre")):
                 revenue_kpi = next(
                     (kpi for kpi in overview["kpis"] if kpi["id"] == "revenue"), None

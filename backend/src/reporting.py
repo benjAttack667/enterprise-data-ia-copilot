@@ -11,13 +11,22 @@ from pathlib import Path
 from typing import Any
 
 
+def _format_kpi(kpi: dict[str, Any]) -> str:
+    """Keep missing aggregates explicit in exported reports."""
+
+    value = kpi.get("value")
+    if value is None:
+        return "—"
+    return f"{value}{kpi.get('unit', '')}"
+
+
 def _markdown_report(
     overview: dict[str, Any], quality: dict[str, Any], anomalies: dict[str, Any]
 ) -> str:
     dataset = overview["dataset"]
     generated_at = datetime.now(timezone.utc).isoformat()
     kpi_lines = "\n".join(
-        f"- **{kpi['label']}** : {kpi['value']}{kpi.get('unit', '')}"
+        f"- **{kpi['label']}** : {_format_kpi(kpi)}"
         for kpi in overview["kpis"]
     )
     problem_lines = "\n".join(f"- {problem}" for problem in quality["problems"])
@@ -74,10 +83,9 @@ def _html_report(
     dataset = overview["dataset"]
     generated_at = datetime.now(timezone.utc).isoformat()
     kpis = "".join(
-        "<article><span>{}</span><strong>{}{}</strong></article>".format(
+        "<article><span>{}</span><strong>{}</strong></article>".format(
             escape(str(kpi["label"])),
-            escape(str(kpi["value"])),
-            escape(str(kpi.get("unit", ""))),
+            escape(_format_kpi(kpi)),
         )
         for kpi in overview["kpis"]
     )
