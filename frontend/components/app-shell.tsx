@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { Sidebar } from '@/components/sidebar'
 import { Header } from '@/components/header'
 import { DatasetProvider, useDataset } from '@/components/dataset-provider'
+import { SheetSelectionDialog } from '@/components/sheet-selection-dialog'
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -30,13 +31,35 @@ function AppFrame({
   sidebarOpen: boolean
   setSidebarOpen: (open: boolean) => void
 }) {
-  const { revision, error, uploadError, overview, clearError } = useDataset()
-  const visibleError = uploadError ?? (overview ? error : null)
+  const {
+    revision,
+    error,
+    uploadError,
+    overview,
+    uploading,
+    sheetSelection,
+    selectSheet,
+    cancelSheetSelection,
+    clearError,
+  } = useDataset()
+  // The dialog owns the live error region while a workbook choice is pending;
+  // rendering the banner too would announce the same failure twice.
+  const visibleError = sheetSelection ? null : uploadError ?? (overview ? error : null)
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="flex min-w-0 flex-1 flex-col">
         <Header onMenuClick={() => setSidebarOpen(true)} />
+        {sheetSelection ? (
+          <SheetSelectionDialog
+            key={`${sheetSelection.fileName}:${sheetSelection.sheets.join('\u0000')}`}
+            selection={sheetSelection}
+            uploading={uploading}
+            error={uploadError}
+            onConfirm={selectSheet}
+            onCancel={cancelSheetSelection}
+          />
+        ) : null}
         {visibleError ? (
           <div role="alert" aria-live="assertive" className="flex items-center justify-between gap-3 border-b border-destructive/20 bg-destructive/5 px-4 py-2.5 text-xs text-destructive lg:px-6">
             <span>

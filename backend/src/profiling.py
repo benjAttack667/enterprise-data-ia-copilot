@@ -30,7 +30,28 @@ _STRONG_DATE_TOKENS = {
     "year",
 }
 _CONTEXTUAL_DATE_TOKENS = {"created", "modified", "update", "updated"}
-_IDENTIFIER_TOKENS = {"id", "identifier", "uuid", "guid"}
+_EXPLICIT_IDENTIFIER_TOKENS = {"id", "identifier", "uuid", "guid"}
+_CONTEXTUAL_IDENTIFIER_SUFFIXES = {"code", "key", "number"}
+# These names describe a reusable business category rather than one entity.
+# Keeping the deny-list deliberately small prevents values such as
+# ``country_code`` and ``status_code`` from being treated as row identifiers,
+# while names such as ``user_code`` and ``account_number`` remain identifiers.
+_CATEGORICAL_CODE_TOKENS = {
+    "area",
+    "category",
+    "country",
+    "currency",
+    "department",
+    "error",
+    "language",
+    "postal",
+    "region",
+    "segment",
+    "state",
+    "status",
+    "type",
+    "zip",
+}
 _DAY_MONTH_YEAR = re.compile(
     r"^(?P<first>\d{1,2})/(?P<second>\d{1,2})/(?P<year>\d{4})$"
 )
@@ -72,9 +93,11 @@ def is_identifier_name(name: str) -> bool:
     tokens = _name_tokens(name)
     if not tokens:
         return False
-    if any(token in _IDENTIFIER_TOKENS for token in tokens):
+    if any(token in _EXPLICIT_IDENTIFIER_TOKENS for token in tokens):
         return True
-    return len(tokens) > 1 and tokens[-1] in {"number", "code", "key"}
+    if len(tokens) < 2 or tokens[-1] not in _CONTEXTUAL_IDENTIFIER_SUFFIXES:
+        return False
+    return not bool(set(tokens[:-1]) & _CATEGORICAL_CODE_TOKENS)
 
 
 def has_datetime_name_hint(name: str) -> bool:

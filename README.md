@@ -10,7 +10,8 @@ La démo publique est protégée par un mot de passe partagé. Elle doit être u
 
 ## Fonctionnalités
 
-- import CSV/XLSX streamé et borné à 10 Mio, sans copie complète du fichier en mémoire ;
+- import CSV (virgule, point-virgule ou tabulation) et XLSX streamé et borné à 10 Mio, sans copie complète du fichier en mémoire ;
+- détection déterministe du séparateur CSV et sélection explicite de la feuille pour les classeurs Excel multi-feuilles ;
 - quotas configurables à la baisse sur les lignes, colonnes, cellules et archives Excel, avec plafonds de sécurité et limitation de fréquence ;
 - jauge réelle du stockage utilisé et rétention automatique des imports, rapports et événements ;
 - accès de démonstration protégé par une session HTTP-only signée et une API FastAPI non exposée directement au navigateur ;
@@ -201,7 +202,7 @@ Utilisez une variable partagée Railway pour `BACKEND_SERVICE_TOKEN` afin d'évi
 
 | Méthode | Endpoint | Résultat |
 | --- | --- | --- |
-| `POST` | `/api/upload` | valide, stocke et active un CSV/XLSX |
+| `POST` | `/api/upload` | valide, stocke et active un CSV/XLSX (`sheet_name` optionnel pour Excel) |
 | `GET` | `/api/overview` | métadonnées, KPI et séries de synthèse |
 | `GET` | `/api/data-quality` | score, contrôles par colonne et recommandations |
 | `GET` | `/api/dashboard` | agrégation compatible Recharts |
@@ -216,6 +217,8 @@ Un endpoint de santé minimal reste public sur `GET /api/health`. Toutes les aut
 Un garde ASGI vérifie le jeton de service et la taille du corps avant que FastAPI ne parse le JSON ou le multipart, y compris lorsque `Content-Length` est absent ou mensonger. Les corps métier sont bornés à 64 Kio ; l'import dispose de la limite fichier configurée plus une marge fixe pour l'enveloppe multipart.
 
 L'ingestion écrit chaque fichier par blocs dans un temporaire situé sur le même volume, calcule son empreinte SHA-256, valide sa taille et sa structure, puis l'active par remplacement atomique. La démo accepte au plus 10 imports par fenêtre de 10 minutes. Un verrou partagé autorise un seul import ou calcul analytique lourd à la fois par instance et renvoie `429` avec `Retry-After` lorsqu'elle est occupée. Elle conserve au plus le dernier fichier importé, les 20 rapports les plus récents et 500 événements métier ; un échec de restauration de ces quotas fait échouer l'écriture au lieu de laisser le stockage croître silencieusement. Les simples consultations `GET` ne remplissent plus l'historique SQLite.
+
+Pour un CSV, le backend teste uniquement la virgule, le point-virgule et la tabulation, vérifie la cohérence de toutes les lignes, puis transmet le même encodage et le même séparateur à Pandas. Un format ambigu est refusé plutôt qu'interprété silencieusement. Pour un XLSX à plusieurs feuilles, le premier envoi retourne la liste des feuilles de données sans activer ni conserver le fichier ; l'utilisateur choisit ensuite la feuille exacte dans l'interface et confirme l'import. Ce flux prudent transfère donc deux fois un classeur multi-feuilles et consomme deux tentatives du quota d'import.
 
 ## Logique d'analyse
 
@@ -237,7 +240,7 @@ npm run lint
 npm run build
 ```
 
-La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les types sémantiques, les dates UTC/françaises/ambiguës, la sérialisation JSON stricte des absences, IsolationForest sur nombres textuels et valeurs extrêmes, le streaming CSV/XLSX, les seuils exacts de ressources, les flux sans longueur fiable, la protection des archives Excel, le rate limiting, la concurrence, les erreurs de stockage `507`, la rétention, l'authentification précoce du service, le démarrage fail-closed, le fallback IA et les rapports.
+La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les types sémantiques et identifiants, les dates UTC/françaises/ambiguës, la sérialisation JSON stricte des absences, IsolationForest sur nombres textuels et valeurs extrêmes, les séparateurs CSV et champs cités, la sélection de feuille Excel, le streaming CSV/XLSX, les seuils exacts de ressources, les flux sans longueur fiable, la protection des archives Excel, le rate limiting, la concurrence, les erreurs de stockage `507`, la rétention, l'authentification précoce du service, le démarrage fail-closed, le fallback IA et les rapports.
 
 ### Parcours E2E avec Robot Framework
 
@@ -245,7 +248,7 @@ La suite Robot démarre automatiquement une stack isolée sur les ports `3100` e
 
 Les uploads, rapports et événements SQLite du parcours E2E sont écrits dans `tests/robot/results/runtime/`. Le run recrée cet espace avant chaque exécution : il ne modifie donc pas les données locales de démonstration du backend.
 
-Le parcours comporte 14 scénarios : authentification, protection directe du backend, déconnexion, workflow nominal complet, XLSX corrompu, atomicité de l'import, détection non applicable, dataset entièrement numérique et indisponibilité de l'API.
+Le parcours comporte 16 scénarios : authentification, protection directe du backend, déconnexion, workflow nominal complet, CSV point-virgule avec champ cité, choix d'une feuille Excel, XLSX corrompu, atomicité de l'import, détection non applicable, dataset entièrement numérique et indisponibilité de l'API.
 
 ```powershell
 # Depuis la racine du projet
@@ -257,7 +260,7 @@ Les preuves d'exécution sont générées dans `tests/robot/results/` : `report.
 
 ### Intégration continue
 
-Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) exécute automatiquement Pytest, le contrôle TypeScript, ESLint, le build Next.js et les 14 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
+Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) exécute automatiquement Pytest, le contrôle TypeScript, ESLint, le build Next.js et les 16 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
 
 ## Scénario de démonstration en entretien
 

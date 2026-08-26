@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .profiling import normalize_blanks, profile_dataframe
+from .profiling import ColumnProfile, normalize_blanks, profile_dataframe
 
 
 def _normalise_blanks(dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -44,7 +44,10 @@ def _mixed_type_mask(series: pd.Series) -> bool:
     return bool(0.1 < numeric_share < 0.9)
 
 
-def _duplicate_masks(dataframe: pd.DataFrame) -> dict[str, pd.Series]:
+def _duplicate_masks(
+    dataframe: pd.DataFrame,
+    profiles: dict[str, ColumnProfile],
+) -> dict[str, pd.Series]:
     """Distingue doublons stricts, identifiants répétés et indicateurs explicites."""
 
     strict = dataframe.duplicated(keep="first")
@@ -53,7 +56,7 @@ def _duplicate_masks(dataframe: pd.DataFrame) -> dict[str, pd.Series]:
     identifier_columns = [
         column
         for column in dataframe.columns
-        if str(column).lower() == "id" or str(column).lower().endswith("_id")
+        if profiles[str(column)].is_identifier
     ]
     for column in identifier_columns:
         non_null = dataframe[column].notna()
@@ -87,7 +90,7 @@ def audit_data_quality(dataframe: pd.DataFrame) -> dict[str, Any]:
     missing_by_column = df.isna().sum()
     missing_count = int(missing_by_column.sum())
     missing_fraction = missing_count / total_cells if row_count and column_count else 1.0
-    duplicate_masks = _duplicate_masks(df)
+    duplicate_masks = _duplicate_masks(df, profiles)
     duplicate_mask = duplicate_masks["combined"]
     duplicate_count = int(duplicate_mask.sum())
     duplicate_fraction = duplicate_count / row_count if row_count else 0.0
