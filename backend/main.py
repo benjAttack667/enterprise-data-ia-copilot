@@ -18,6 +18,7 @@ from fastapi import (
     Depends,
     FastAPI,
     File,
+    Form,
     HTTPException,
     Query,
     Request,
@@ -38,6 +39,7 @@ try:  # Permet ``uvicorn backend.main:app`` depuis la racine.
         DatasetLimits,
         DatasetSnapshot,
         DatasetStore,
+        WorkbookSheetError,
     )
     from .src.history import HistoryRepository
     from .src.models import AISummaryRequest, Aggregation, AskRequest, ReportRequest
@@ -56,6 +58,7 @@ except ImportError:  # Permet aussi ``uvicorn main:app`` depuis ``backend``.
         DatasetLimits,
         DatasetSnapshot,
         DatasetStore,
+        WorkbookSheetError,
     )
     from src.history import HistoryRepository
     from src.models import AISummaryRequest, Aggregation, AskRequest, ReportRequest
@@ -255,6 +258,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def upload_dataset(
         request: Request,
         file: Annotated[UploadFile, File(description="Fichier CSV ou XLSX")],
+        sheet_name: Annotated[
+            str | None,
+            Form(
+                max_length=128,
+                description="Nom exact de la feuille XLSX à analyser",
+            ),
+        ] = None,
     ) -> dict[str, object]:
         """Stream, validate, retain and activate one bounded CSV/XLSX dataset."""
 
@@ -301,11 +311,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if total_size == 0:
                 raise HTTPException(status_code=400, detail="Le fichier est vide.")
             try:
+                activation_args: tuple[object, ...] = (filename, staged_path)
+                if sheet_name is not None:
+                    activation_args += (sheet_name,)
                 snapshot = await run_in_threadpool(
                     request.app.state.dataset_store.activate_staged_upload,
-                    filename,
-                    staged_path,
+                    *activation_args,
                 )
+            except WorkbookSheetError as exc:
+                status_code = 409 if exc.code == "sheet_selection_required" else 422
+                raise HTTPException(
+                    status_code=status_code,
+                    detail={
+                        "code": exc.code,
+                        "message": str(exc),
+                        "sheets": list(exc.sheets),
+                    },
+                ) from exc
             except DatasetError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             await run_in_threadpool(
@@ -316,6 +338,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 filename=filename,
                 size=total_size,
                 sha256=checksum.hexdigest(),
+                selected_sheet=snapshot.selected_sheet,
             )
             metadata = snapshot.metadata()
             return {
@@ -325,6 +348,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "rows": metadata["rows"],
                 "columns": metadata["columns"],
                 "updated_at": metadata["updated_at"],
+                "selected_sheet": metadata["selected_sheet"],
+                "available_sheets": metadata["available_sheets"],
                 "message": "Dataset importé et activé avec succès.",
             }
         except OSError as exc:

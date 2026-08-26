@@ -1,6 +1,6 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError, type OverviewResponse } from '@/lib/data'
 import {
   formatUploadSizeLabel,
@@ -17,10 +17,24 @@ type DatasetContextValue = {
   uploadError: string | null
   uploadMaxBytes: number
   uploadMaxLabel: string
+  sheetSelection: SheetSelectionRequest | null
   revision: number
   refresh: () => Promise<void>
   upload: (file: File) => Promise<void>
+  selectSheet: (sheetName: string) => Promise<void>
+  cancelSheetSelection: () => void
   clearError: () => void
+}
+
+export type SheetSelectionRequest = {
+  fileName: string
+  fileSize: number
+  sheets: string[]
+}
+
+type PendingSheetSelection = {
+  file: File
+  sheets: string[]
 }
 
 const DatasetContext = createContext<DatasetContextValue | null>(null)
@@ -47,12 +61,20 @@ function uploadErrorMessage(cause: unknown, uploadMaxLabel: string) {
   return cause instanceof Error ? cause.message : "L’import a échoué."
 }
 
+function sheetsFromError(cause: unknown, expectedCode: string) {
+  if (!(cause instanceof ApiError) || cause.detail?.code !== expectedCode) return null
+  const sheets = cause.detail.sheets
+  return sheets && sheets.length > 0 ? sheets : null
+}
+
 export function DatasetProvider({ children }: { children: React.ReactNode }) {
   const [overview, setOverview] = useState<OverviewResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [pendingSheetSelection, setPendingSheetSelection] = useState<PendingSheetSelection | null>(null)
+  const sheetUploadInFlight = useRef(false)
   const [revision, setRevision] = useState(0)
   const configuredUploadMaxBytes = overview?.storage?.uploads.max_file_bytes
   const uploadMaxBytes =
@@ -101,10 +123,18 @@ export function DatasetProvider({ children }: { children: React.ReactNode }) {
       setUploading(true)
       setError(null)
       setUploadError(null)
+      setPendingSheetSelection(null)
       try {
         await api.upload(file)
         await refresh()
       } catch (cause) {
+        const sheets = sheetsFromError(cause, 'sheet_selection_required')
+        if (cause instanceof ApiError && cause.status === 409 && sheets) {
+          // Keep the browser File only in memory until a worksheet is chosen.
+          // The backend has not activated or retained this upload yet.
+          setPendingSheetSelection({ file, sheets })
+          return
+        }
         setUploadError(uploadErrorMessage(cause, uploadMaxLabel))
         throw cause
       } finally {
@@ -114,9 +144,58 @@ export function DatasetProvider({ children }: { children: React.ReactNode }) {
     [refresh, uploadMaxBytes, uploadMaxLabel],
   )
 
+  const selectSheet = useCallback(
+    async (sheetName: string) => {
+      const pending = pendingSheetSelection
+      if (
+        !pending ||
+        !pending.sheets.includes(sheetName) ||
+        sheetUploadInFlight.current
+      ) return
+
+      sheetUploadInFlight.current = true
+      setUploading(true)
+      setError(null)
+      setUploadError(null)
+      try {
+        await api.upload(pending.file, sheetName)
+        setPendingSheetSelection(null)
+        await refresh()
+      } catch (cause) {
+        const sheets = sheetsFromError(cause, 'invalid_sheet_name')
+        if (cause instanceof ApiError && cause.status === 422 && sheets) {
+          setPendingSheetSelection({ file: pending.file, sheets })
+        }
+        setUploadError(uploadErrorMessage(cause, uploadMaxLabel))
+        throw cause
+      } finally {
+        sheetUploadInFlight.current = false
+        setUploading(false)
+      }
+    },
+    [pendingSheetSelection, refresh, uploadMaxLabel],
+  )
+
+  const cancelSheetSelection = useCallback(() => {
+    if (uploading) return
+    setPendingSheetSelection(null)
+    setUploadError(null)
+  }, [uploading])
+
   useEffect(() => {
     queueMicrotask(() => void refresh())
   }, [refresh])
+
+  const sheetSelection = useMemo<SheetSelectionRequest | null>(
+    () => pendingSheetSelection
+      ? {
+          fileName: pendingSheetSelection.file.name,
+          fileSize: pendingSheetSelection.file.size,
+          sheets: pendingSheetSelection.sheets,
+        }
+      : null,
+    [pendingSheetSelection],
+  )
 
   const value = useMemo(
     () => ({
@@ -127,9 +206,12 @@ export function DatasetProvider({ children }: { children: React.ReactNode }) {
       uploadError,
       uploadMaxBytes,
       uploadMaxLabel,
+      sheetSelection,
       revision,
       refresh,
       upload,
+      selectSheet,
+      cancelSheetSelection,
       clearError: () => {
         setError(null)
         setUploadError(null)
@@ -139,8 +221,11 @@ export function DatasetProvider({ children }: { children: React.ReactNode }) {
       error,
       loading,
       overview,
+      cancelSheetSelection,
       refresh,
       revision,
+      selectSheet,
+      sheetSelection,
       upload,
       uploadError,
       uploadMaxBytes,

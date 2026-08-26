@@ -19,6 +19,8 @@ export type DatasetInfo = {
   source?: string
   uploaded_at?: string
   updated_at?: string
+  selected_sheet?: string | null
+  available_sheets?: string[]
 }
 
 export type Kpi = {
@@ -216,7 +218,15 @@ export type HistoryResponse = { items: HistoryEntry[] }
 
 export type UploadResponse = {
   dataset?: DatasetInfo
+  selected_sheet?: string | null
+  available_sheets?: string[]
   message?: string
+}
+
+export type ApiErrorDetail = {
+  code?: string
+  message?: string
+  sheets?: string[]
 }
 
 export class ApiError extends Error {
@@ -224,6 +234,7 @@ export class ApiError extends Error {
     message: string,
     public readonly status?: number,
     public readonly retryAfterSeconds?: number,
+    public readonly detail?: ApiErrorDetail,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -303,11 +314,34 @@ async function executeRequest<T>(
 
   if (!response.ok) {
     let message = `Erreur API (${response.status})`
+    let errorDetail: ApiErrorDetail | undefined
     try {
-      const body = (await response.json()) as { detail?: string | Array<{ msg?: string }> }
+      const body = (await response.json()) as { detail?: unknown }
       if (typeof body.detail === 'string') message = body.detail
       if (Array.isArray(body.detail)) {
-        message = body.detail.map((item) => item.msg).filter(Boolean).join(', ') || message
+        message = body.detail
+          .map((item) => {
+            if (!item || typeof item !== 'object') return undefined
+            const validationMessage = (item as { msg?: unknown }).msg
+            return typeof validationMessage === 'string' ? validationMessage : undefined
+          })
+          .filter(Boolean)
+          .join(', ') || message
+      }
+      if (body.detail && typeof body.detail === 'object' && !Array.isArray(body.detail)) {
+        const detail = body.detail as Record<string, unknown>
+        const detailMessage = typeof detail.message === 'string' ? detail.message : undefined
+        const detailCode = typeof detail.code === 'string' ? detail.code : undefined
+        const detailSheets = Array.isArray(detail.sheets)
+          ? [...new Set(detail.sheets.filter((sheet): sheet is string => typeof sheet === 'string' && sheet.length > 0))]
+          : undefined
+
+        errorDetail = {
+          code: detailCode,
+          message: detailMessage,
+          sheets: detailSheets,
+        }
+        if (detailMessage) message = detailMessage
       }
     } catch {
       const text = await response.text().catch(() => '')
@@ -317,6 +351,7 @@ async function executeRequest<T>(
       message,
       response.status,
       retryAfterSeconds(response.headers.get('retry-after')),
+      errorDetail,
     )
   }
 
@@ -339,9 +374,10 @@ function queryString(params: Record<string, string | undefined>) {
 }
 
 export const api = {
-  upload(file: File) {
+  upload(file: File, sheetName?: string) {
     const form = new FormData()
     form.append('file', file)
+    if (sheetName) form.append('sheet_name', sheetName)
     return request<UploadResponse>('/api/upload', { method: 'POST', body: form })
   },
 

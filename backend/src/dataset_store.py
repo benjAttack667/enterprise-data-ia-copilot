@@ -11,12 +11,28 @@ import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 
 
 class DatasetError(ValueError):
     """Erreur de validation ou de lecture d'un dataset."""
+
+
+class WorkbookSheetError(DatasetError):
+    """Actionable workbook error that safely exposes sheet names only."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Literal["sheet_selection_required", "invalid_sheet_name"],
+        sheets: list[str],
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.sheets = tuple(sheets)
 
 
 @dataclass(frozen=True)
@@ -41,6 +57,8 @@ class DatasetSnapshot:
     updated_at: str
     context: str
     dataframe: pd.DataFrame
+    selected_sheet: str | None = None
+    available_sheets: tuple[str, ...] = ()
 
     def metadata(self) -> dict[str, object]:
         """Expose les métadonnées attendues par le frontend."""
@@ -54,7 +72,28 @@ class DatasetSnapshot:
             "source": self.source,
             "updated_at": self.updated_at,
             "context": self.context,
+            "selected_sheet": self.selected_sheet,
+            "available_sheets": list(self.available_sheets),
         }
+
+
+@dataclass(frozen=True)
+class _CSVLayout:
+    """Encoding and separator selected once for validation and Pandas."""
+
+    encoding: str
+    delimiter: str
+    headers: list[str]
+    rows: int
+
+
+@dataclass(frozen=True)
+class _ParsedDataset:
+    """A dataframe plus non-sensitive ingestion metadata."""
+
+    dataframe: pd.DataFrame
+    selected_sheet: str | None = None
+    available_sheets: tuple[str, ...] = ()
 
 
 def _utc_now() -> str:
@@ -93,16 +132,109 @@ def _validate_headers(headers: list[object]) -> list[str]:
     return normalized
 
 
-def _csv_headers(path: Path) -> list[str]:
-    """Read only the first CSV record, with the encodings already supported."""
+_CSV_DELIMITERS = (",", ";", "\t")
 
-    for encoding in ("utf-8-sig", "latin-1"):
+
+def _csv_encoding(path: Path) -> str:
+    """Select one supported encoding before delimiter inspection."""
+
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as stream:
+            while stream.read(64 * 1024):
+                pass
+        return "utf-8-sig"
+    except UnicodeDecodeError:
+        # Latin-1 maps every byte deterministically and preserves support for
+        # exports from older spreadsheet applications.
+        return "latin-1"
+
+
+def _inspect_csv_candidate(
+    path: Path,
+    *,
+    encoding: str,
+    delimiter: str,
+) -> tuple[list[str], int, bool]:
+    """Return header, data-row count and structural consistency."""
+
+    try:
+        with path.open("r", encoding=encoding, newline="") as stream:
+            reader = csv.reader(stream, delimiter=delimiter, strict=True)
+            records = (row for row in reader if row)
+            headers = list(next(records, []))
+            row_count = 0
+            consistent = bool(headers)
+            expected_width = len(headers)
+            for row in records:
+                row_count += 1
+                if len(row) != expected_width:
+                    consistent = False
+            return headers, row_count, consistent
+    except (csv.Error, UnicodeDecodeError) as exc:
+        raise DatasetError(
+            "Structure CSV incohérente : chaque ligne doit utiliser le même "
+            "séparateur et contenir le même nombre de colonnes."
+        ) from exc
+
+
+def _detect_csv_layout(path: Path) -> _CSVLayout:
+    """Detect comma, semicolon or tab deterministically and only once.
+
+    A candidate must produce a constant number of columns for every logical
+    CSV record. More than one multi-column candidate is rejected instead of
+    silently guessing and corrupting the imported schema.
+    """
+
+    encoding = _csv_encoding(path)
+    inspections: dict[str, tuple[list[str], int, bool]] = {}
+    parse_error: DatasetError | None = None
+    for delimiter in _CSV_DELIMITERS:
         try:
-            with path.open("r", encoding=encoding, newline="") as stream:
-                return _validate_headers(list(next(csv.reader(stream), [])))
-        except UnicodeDecodeError:
-            continue
-    raise DatasetError("Le fichier CSV utilise un encodage non pris en charge.")
+            inspections[delimiter] = _inspect_csv_candidate(
+                path,
+                encoding=encoding,
+                delimiter=delimiter,
+            )
+        except DatasetError as exc:
+            parse_error = exc
+            inspections[delimiter] = ([], 0, False)
+
+    multi_column = [
+        delimiter
+        for delimiter, (headers, _rows, consistent) in inspections.items()
+        if consistent and len(headers) > 1
+    ]
+    if len(multi_column) > 1:
+        raise DatasetError(
+            "Séparateur CSV ambigu : utilisez un seul séparateur parmi virgule, "
+            "point-virgule ou tabulation."
+        )
+    if len(multi_column) == 1:
+        delimiter = multi_column[0]
+    else:
+        # A delimiter-free file is a valid single-column CSV. If any candidate
+        # changes width between records, however, the source is malformed.
+        single_column = [
+            delimiter
+            for delimiter, (headers, _rows, consistent) in inspections.items()
+            if consistent and len(headers) == 1
+        ]
+        if len(single_column) != len(_CSV_DELIMITERS):
+            if parse_error is not None:
+                raise parse_error
+            raise DatasetError(
+                "Structure CSV incohérente : chaque ligne doit utiliser le même "
+                "séparateur et contenir le même nombre de colonnes."
+            )
+        delimiter = ","
+
+    headers, rows, _consistent = inspections[delimiter]
+    return _CSVLayout(
+        encoding=encoding,
+        delimiter=delimiter,
+        headers=_validate_headers(headers),
+        rows=rows,
+    )
 
 
 def _validate_xlsx_archive(path: Path, limits: DatasetLimits) -> None:
@@ -134,9 +266,27 @@ def _validate_xlsx_archive(path: Path, limits: DatasetLimits) -> None:
         raise DatasetError("Le taux de compression du fichier XLSX est trop élevé.")
 
 
+def _normalise_sheet_name(sheet_name: str | None) -> str | None:
+    """Validate an optional worksheet name before workbook lookup."""
+
+    if sheet_name is None:
+        return None
+    if not sheet_name.strip():
+        raise DatasetError("Le nom de feuille ne peut pas être vide.")
+    if len(sheet_name) > 128:
+        raise DatasetError("Le nom de feuille dépasse la limite de 128 caractères.")
+    if not sheet_name.isprintable():
+        raise DatasetError("Le nom de feuille contient des caractères non autorisés.")
+    # Preserve the exact title: Excel permits leading/trailing spaces and the
+    # client receives the canonical names directly from this API.
+    return sheet_name
+
+
 def _xlsx_shape_and_headers(
-    path: Path, limits: DatasetLimits
-) -> tuple[int, int, list[str]]:
+    path: Path,
+    limits: DatasetLimits,
+    sheet_name: str | None = None,
+) -> tuple[int, int, list[str], str, tuple[str, ...]]:
     """Inspect worksheet dimensions in read-only mode before Pandas parsing."""
 
     from openpyxl import load_workbook
@@ -151,7 +301,32 @@ def _xlsx_shape_and_headers(
                 keep_links=False,
             )
             try:
-                worksheet = workbook.active
+                # Hidden worksheets are intentionally selectable. Hiding a
+                # sheet is a presentation preference, not an access-control
+                # boundary, and the workbook was supplied by the caller.
+                # Chart sheets are excluded because they contain no tabular
+                # cells and cannot be consumed by Pandas as a worksheet.
+                sheets = [worksheet.title for worksheet in workbook.worksheets]
+                if not sheets:
+                    raise DatasetError(
+                        "Le classeur XLSX ne contient aucune feuille de données."
+                    )
+                requested_sheet = _normalise_sheet_name(sheet_name)
+                if requested_sheet is None and len(sheets) > 1:
+                    raise WorkbookSheetError(
+                        "Ce classeur contient plusieurs feuilles. Sélectionnez "
+                        "la feuille à analyser.",
+                        code="sheet_selection_required",
+                        sheets=sheets,
+                    )
+                selected_sheet = requested_sheet or sheets[0]
+                if selected_sheet not in sheets:
+                    raise WorkbookSheetError(
+                        f"La feuille « {selected_sheet} » est introuvable.",
+                        code="invalid_sheet_name",
+                        sheets=sheets,
+                    )
+                worksheet = workbook[selected_sheet]
                 row_count = max(int(worksheet.max_row or 0) - 1, 0)
                 column_count = int(worksheet.max_column or 0)
                 headers = _validate_headers(
@@ -174,7 +349,7 @@ def _xlsx_shape_and_headers(
         raise
     except Exception as exc:
         raise DatasetError("Le fichier XLSX ne peut pas être inspecté.") from exc
-    return row_count, column_count, headers
+    return row_count, column_count, headers, selected_sheet, tuple(sheets)
 
 
 def _validate_shape(rows: int, columns: int, limits: DatasetLimits) -> None:
@@ -195,8 +370,11 @@ def _validate_shape(rows: int, columns: int, limits: DatasetLimits) -> None:
 
 
 def _read_dataframe_path(
-    filename: str, path: Path, limits: DatasetLimits
-) -> pd.DataFrame:
+    filename: str,
+    path: Path,
+    limits: DatasetLimits,
+    sheet_name: str | None = None,
+) -> _ParsedDataset:
     """Contrôle les en-têtes avant que Pandas ne renomme les doublons.
 
     ``read_csv`` et ``read_excel`` rendent par défaut les noms dupliqués
@@ -207,34 +385,37 @@ def _read_dataframe_path(
     suffix = Path(filename).suffix.lower()
     try:
         if suffix == ".csv":
-            headers = _csv_headers(path)
-            _validate_shape(0, len(headers), limits)
-            max_rows_by_cells = limits.max_cells // len(headers)
+            if sheet_name is not None:
+                raise DatasetError(
+                    "Le paramètre sheet_name est réservé aux fichiers XLSX."
+                )
+            layout = _detect_csv_layout(path)
+            _validate_shape(layout.rows, len(layout.headers), limits)
+            max_rows_by_cells = limits.max_cells // len(layout.headers)
             read_limit = min(limits.max_rows, max_rows_by_cells)
-            try:
-                dataframe = pd.read_csv(
-                    path,
-                    nrows=read_limit + 1,
-                    # Les libellés métier comme "NA" ou "NULL" doivent rester
-                    # des valeurs brutes. Le profilage sémantique normalise
-                    # ensuite uniquement les cellules vides ou composées
-                    # d'espaces, de façon identique dans toutes les analyses.
-                    keep_default_na=False,
-                )
-            except UnicodeDecodeError:
-                dataframe = pd.read_csv(
-                    path,
-                    encoding="latin-1",
-                    nrows=read_limit + 1,
-                    keep_default_na=False,
-                )
+            dataframe = pd.read_csv(
+                path,
+                encoding=layout.encoding,
+                sep=layout.delimiter,
+                nrows=read_limit + 1,
+                # Les libellés métier comme "NA" ou "NULL" doivent rester
+                # des valeurs brutes. Le profilage sémantique normalise
+                # ensuite uniquement les cellules vides ou composées
+                # d'espaces, de façon identique dans toutes les analyses.
+                keep_default_na=False,
+            )
+            selected_sheet = None
+            available_sheets: tuple[str, ...] = ()
         elif suffix == ".xlsx":
-            rows, columns, _headers = _xlsx_shape_and_headers(path, limits)
+            rows, columns, _headers, selected_sheet, available_sheets = (
+                _xlsx_shape_and_headers(path, limits, sheet_name)
+            )
             _validate_shape(rows, columns, limits)
             with path.open("rb") as binary_stream:
                 dataframe = pd.read_excel(
                     binary_stream,
                     engine="openpyxl",
+                    sheet_name=selected_sheet,
                     nrows=limits.max_rows + 1,
                     keep_default_na=False,
                 )
@@ -255,7 +436,11 @@ def _read_dataframe_path(
         raise DatasetError("Chaque colonne doit avoir un nom non vide.")
     if dataframe.columns.duplicated().any():
         raise DatasetError("Le fichier contient des noms de colonnes dupliqués.")
-    return dataframe
+    return _ParsedDataset(
+        dataframe=dataframe,
+        selected_sheet=selected_sheet,
+        available_sheets=available_sheets,
+    )
 
 
 class DatasetStore:
@@ -280,7 +465,8 @@ class DatasetStore:
         default_path = self.samples_dir / "marketing_leads.csv"
         if not default_path.is_file():
             raise RuntimeError(f"Dataset de démonstration absent : {default_path}")
-        dataframe = _read_dataframe_path(default_path.name, default_path, self.limits)
+        parsed = _read_dataframe_path(default_path.name, default_path, self.limits)
+        dataframe = parsed.dataframe
         updated_at = datetime.fromtimestamp(
             default_path.stat().st_mtime, tz=timezone.utc
         ).isoformat()
@@ -327,6 +513,8 @@ class DatasetStore:
             updated_at=snapshot.updated_at,
             context=snapshot.context,
             dataframe=snapshot.dataframe.copy(deep=True),
+            selected_sheet=snapshot.selected_sheet,
+            available_sheets=snapshot.available_sheets,
         )
 
     def get_active(self) -> DatasetSnapshot:
@@ -356,7 +544,10 @@ class DatasetStore:
             pass
 
     def activate_staged_upload(
-        self, filename: str, staged_path: Path
+        self,
+        filename: str,
+        staged_path: Path,
+        sheet_name: str | None = None,
     ) -> DatasetSnapshot:
         """Validate a staged file, atomically retain it and activate its data.
 
@@ -372,7 +563,13 @@ class DatasetStore:
         uploads_root = self.uploads_dir.resolve()
         if uploads_root not in staged_path.parents:
             raise DatasetError("Chemin temporaire invalide.")
-        dataframe = _read_dataframe_path(safe_original_name, staged_path, self.limits)
+        parsed = _read_dataframe_path(
+            safe_original_name,
+            staged_path,
+            self.limits,
+            sheet_name,
+        )
+        dataframe = parsed.dataframe
         dataset_id = uuid.uuid4().hex
         stored_name = f"{dataset_id}{suffix}"
         stored_path = (self.uploads_dir / stored_name).resolve()
@@ -386,6 +583,8 @@ class DatasetStore:
             updated_at=_utc_now(),
             context=_infer_context(safe_original_name, list(dataframe.columns)),
             dataframe=dataframe,
+            selected_sheet=parsed.selected_sheet,
+            available_sheets=parsed.available_sheets,
         )
         with self._lock:
             os.replace(staged_path, stored_path)
@@ -401,13 +600,18 @@ class DatasetStore:
             self._active = snapshot
             return self._copy_snapshot(snapshot)
 
-    def activate_upload(self, filename: str, content: bytes) -> DatasetSnapshot:
+    def activate_upload(
+        self,
+        filename: str,
+        content: bytes,
+        sheet_name: str | None = None,
+    ) -> DatasetSnapshot:
         """Compatibility wrapper for trusted in-process callers using bytes."""
 
         staged_path = self.create_staged_upload()
         try:
             staged_path.write_bytes(content)
-            return self.activate_staged_upload(filename, staged_path)
+            return self.activate_staged_upload(filename, staged_path, sheet_name)
         finally:
             self.discard_staged_upload(staged_path)
 

@@ -5,6 +5,7 @@ Documentation     Parcours E2E réel de l'Enterprise Data & IA Copilot.
 Library           SeleniumLibrary    timeout=25s
 Library           Process
 Library           OperatingSystem
+Library           ${CURDIR}${/}ingestion_fixtures.py
 Suite Setup       Démarrer la stack Robot
 Suite Teardown    Arrêter la stack Robot
 Test Tags         e2e    robot-framework
@@ -21,6 +22,8 @@ ${SAMPLE_FILE}        ${PROJECT_ROOT}${/}backend${/}data${/}samples${/}packaging
 ${BROKEN_XLSX}        ${CURDIR}${/}fixtures${/}broken.xlsx
 ${NON_NUMERIC_FILE}   ${CURDIR}${/}fixtures${/}non_numeric.csv
 ${NUMERIC_ONLY_FILE}  ${CURDIR}${/}fixtures${/}numeric_only.csv
+${SEMICOLON_FILE}     ${CURDIR}${/}fixtures${/}semicolon_quoted.csv
+${MULTI_SHEET_XLSX}  ${RUNTIME_DIR}${/}multi-sheet.xlsx
 ${PYTHON_COMMAND}     python
 ${NODE_COMMAND}       node
 ${ROBOT_SERVER}       ${FRONTEND_DIR}${/}scripts${/}robot-server.mjs
@@ -157,7 +160,30 @@ ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
     List Selection Should Be    css:select[aria-label="Mesure"]    y
     Wait Until Page Contains    sum de y par x    30s
 
-12 - Fermer puis rouvrir une session
+12 - Importer un CSV point-virgule avec une valeur citée
+    [Documentation]    Vérifie la détection automatique sans découper le point-virgule contenu dans une cellule.
+    ${semicolon_file}=    Normalize Path    ${SEMICOLON_FILE}
+    Choose File    css:input[type="file"]    ${semicolon_file}
+    Wait Until Page Contains    Semicolon Quoted    40s
+    Page Should Contain    3 lignes
+    Page Should Contain    2 colonnes
+
+13 - Choisir explicitement une feuille Excel
+    [Documentation]    Un classeur multi-feuille doit rester inactif jusqu'au choix, puis propager uniquement la feuille retenue.
+    ${multi_sheet}=    Normalize Path    ${MULTI_SHEET_XLSX}
+    Choose File    css:input[type="file"]    ${multi_sheet}
+    Wait Until Element Is Visible    css:[data-testid="sheet-selection-dialog"]    30s
+    Page Should Contain    Choisir une feuille Excel
+    Click Element    css:[data-testid="sheet-selection-select"]
+    Wait Until Element Is Visible    xpath=//*[@role="option" and normalize-space()="Details"]    10s
+    Click Element    xpath=//*[@role="option" and normalize-space()="Details"]
+    Click Button    xpath=//button[normalize-space()="Analyser cette feuille"]
+    Wait Until Page Contains    Multi Sheet    40s
+    Page Should Contain    3 lignes
+    Page Should Contain    2 colonnes
+    Page Should Contain    Feuille Details
+
+14 - Fermer puis rouvrir une session
     [Documentation]    Vérifie que la déconnexion invalide le cookie avant de poursuivre la suite.
     Click Button    css:button[aria-label="Se déconnecter"]
     Wait Until Location Is    ${FRONTEND_URL}/login    20s
@@ -168,7 +194,7 @@ ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
     Wait Until Location Is    ${FRONTEND_URL}/    20s
     Wait Until Page Contains    Score qualité    30s
 
-13 - Signaler clairement une API indisponible
+15 - Signaler clairement une API indisponible
     [Documentation]    Coupe uniquement le backend Robot puis vérifie l'état d'erreur du frontend.
     Terminate Process    robot-backend    kill=True
     Reload Page
@@ -183,6 +209,7 @@ Démarrer la stack Robot
     Run Keyword And Ignore Error    Remove Directory    ${RUNTIME_DIR}    recursive=True
     Directory Should Not Exist    ${RUNTIME_DIR}
     Create Directory    ${RUNTIME_DIR}
+    Create Multi Sheet Workbook    ${MULTI_SHEET_XLSX}
     # Next.js recalcule ces deux fichiers selon NEXT_DIST_DIR au démarrage.
     # Une copie exacte permet au teardown de préserver le workspace du développeur.
     Copy File    ${FRONTEND_DIR}${/}next-env.d.ts    ${RUNTIME_DIR}${/}next-env.d.ts

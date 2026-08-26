@@ -9,6 +9,13 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const { overview, loading, uploading, error, uploadError } = useDataset()
   const dataset = overview?.dataset
   const visibleError = uploadError ?? error
+  const datasetDetails = dataset
+    ? [
+        `${dataset.rows.toLocaleString('fr-FR')} lignes`,
+        `${dataset.columns} colonnes`,
+        dataset.selected_sheet ? `Feuille ${dataset.selected_sheet}` : null,
+      ].filter(Boolean).join(' · ')
+    : 'Import requis'
 
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center gap-3 border-b border-border bg-background/90 px-4 backdrop-blur lg:px-6">
@@ -31,8 +38,8 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
           <Database className="size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0">
             <p className="truncate text-xs font-medium text-foreground">{dataset?.name ?? 'Aucun dataset'}</p>
-            <p className="text-[11px] text-muted-foreground">
-              {dataset ? `${dataset.rows.toLocaleString('fr-FR')} lignes · ${dataset.columns} colonnes` : 'Import requis'}
+            <p className="truncate text-[11px] text-muted-foreground" title={datasetDetails}>
+              {datasetDetails}
             </p>
           </div>
         </div>
