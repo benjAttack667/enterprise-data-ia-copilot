@@ -4,6 +4,7 @@ import { CheckCircle2, Database, LoaderCircle, Menu, WifiOff } from 'lucide-reac
 import { DatasetUploadButton } from '@/components/dataset-upload'
 import { useDataset } from '@/components/dataset-provider'
 import { LogoutButton } from '@/components/logout-button'
+import { Badge } from '@/components/ui/badge'
 
 export function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const { overview, loading, uploading, error, uploadError } = useDataset()
@@ -37,7 +38,19 @@ export function Header({ onMenuClick }: { onMenuClick: () => void }) {
         <div className="hidden min-w-0 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 sm:flex sm:max-w-64">
           <Database className="size-4 shrink-0 text-muted-foreground" />
           <div className="min-w-0">
-            <p className="truncate text-xs font-medium text-foreground">{dataset?.name ?? 'Aucun dataset'}</p>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <p className="truncate text-xs font-medium text-foreground">{dataset?.name ?? 'Aucun dataset'}</p>
+              {overview?.dataset_recovery?.status === 'restored' ? (
+                <Badge
+                  variant="outline"
+                  data-testid="dataset-recovery-badge"
+                  title={overview.dataset_recovery.message ?? 'Dataset restauré depuis le stockage persistant'}
+                  className="h-4 border-success/25 bg-success/10 px-1.5 text-[10px] text-success"
+                >
+                  Restauré
+                </Badge>
+              ) : null}
+            </div>
             <p className="truncate text-[11px] text-muted-foreground" title={datasetDetails}>
               {datasetDetails}
             </p>

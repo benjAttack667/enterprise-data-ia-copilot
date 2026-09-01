@@ -3,17 +3,35 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
+import logging
 import os
 import re
 import threading
 import uuid
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
+
+
+logger = logging.getLogger(__name__)
+
+_ACTIVE_MANIFEST_NAME = ".active-dataset.json"
+_ACTIVE_MANIFEST_VERSION = 1
+_FALLBACK_MESSAGE = (
+    "Le dataset persistant n'a pas pu être restauré. "
+    "L'échantillon de démonstration est actif."
+)
+_CLEANUP_WARNING_MESSAGE = (
+    "Le dataset actif a été restauré, mais le nettoyage du stockage reste incomplet."
+)
+_DATASET_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class DatasetError(ValueError):
@@ -39,6 +57,7 @@ class WorkbookSheetError(DatasetError):
 class DatasetLimits:
     """Resource limits applied before a dataframe becomes active."""
 
+    max_file_bytes: int = 10 * 1024 * 1024
     max_rows: int = 100_000
     max_columns: int = 200
     max_cells: int = 2_000_000
@@ -457,9 +476,62 @@ class DatasetStore:
         self.limits = limits or DatasetLimits()
         self._lock = threading.RLock()
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self._manifest_path = self.uploads_dir / _ACTIVE_MANIFEST_NAME
+        self._active_stored_path: Path | None = None
+        self._active_manifest_payload: dict[str, object] | None = None
+        self._recovery_status: Literal["sample", "active", "restored", "fallback"] = (
+            "sample"
+        )
+        self._recovery_message: str | None = None
         self._cleanup_staged_uploads()
-        self._prune_final_uploads()
+        self._cleanup_staged_manifests()
+        self._initialize_active_dataset()
+
+    def _initialize_active_dataset(self) -> None:
+        """Restore the durable pointer before deleting any retained upload."""
+
+        final_uploads = self._final_upload_paths()
+        manifest_present = self._manifest_path.exists() or self._manifest_path.is_symlink()
+        if manifest_present and self._manifest_path.is_file():
+            try:
+                snapshot, stored_path, payload = self._restore_manifest()
+            except (DatasetError, OSError, ValueError, TypeError):
+                logger.warning(
+                    "Persistent dataset restoration failed; using the bundled sample.",
+                    exc_info=True,
+                )
+            else:
+                self._active = snapshot
+                self._active_stored_path = stored_path
+                self._active_manifest_payload = payload
+                self._recovery_status = "restored"
+                self._recovery_message = None
+                try:
+                    self._prune_final_uploads(keep=stored_path)
+                except OSError:
+                    logger.warning(
+                        "Persistent dataset restored but orphan cleanup failed."
+                    )
+                    self._recovery_message = _CLEANUP_WARNING_MESSAGE
+                return
+
+        fallback_required = manifest_present or bool(final_uploads)
         self._active = self._load_default()
+        self._active_stored_path = None
+        self._active_manifest_payload = None
+        self._recovery_status = "fallback" if fallback_required else "sample"
+        self._recovery_message = _FALLBACK_MESSAGE if fallback_required else None
+        if fallback_required:
+            logger.warning(
+                "Persistent dataset state is incomplete; using the bundled sample."
+            )
+        self._discard_manifest()
+        try:
+            self._prune_final_uploads(keep=None)
+        except OSError:
+            # Availability wins during recovery. Future uploads retry orphan
+            # cleanup before committing a new durable pointer.
+            logger.warning("Persistent dataset orphan cleanup failed.")
 
     def _load_default(self) -> DatasetSnapshot:
         default_path = self.samples_dir / "marketing_leads.csv"
@@ -493,16 +565,332 @@ class DatasetStore:
         for path in self.uploads_dir.glob(".upload-*.part"):
             path.unlink(missing_ok=True)
 
+    def _cleanup_staged_manifests(self) -> None:
+        """Remove manifests that were never atomically published."""
+
+        for path in self.uploads_dir.glob(".active-dataset-*.tmp"):
+            path.unlink(missing_ok=True)
+
     def _prune_final_uploads(self, keep: Path | None = None) -> None:
-        """Keep exactly one final upload, preferring the newly active file."""
+        """Delete every immutable upload except the durable active target."""
 
         paths = self._final_upload_paths()
-        if keep is None and paths:
-            keep = max(paths, key=lambda path: path.stat().st_mtime_ns)
+        resolved_keep = keep.resolve() if keep is not None else None
         for path in paths:
-            if keep is not None and path == keep:
+            if resolved_keep is not None and path.resolve() == resolved_keep:
                 continue
             path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _best_effort_fsync_file(path: Path) -> None:
+        """Request crash durability where the host filesystem supports it."""
+
+        try:
+            with path.open("rb") as stream:
+                os.fsync(stream.fileno())
+        except OSError:
+            # Some Windows/filesystem combinations do not support fsync for
+            # every file type. Atomic replacement still remains available.
+            pass
+
+    @staticmethod
+    def _best_effort_fsync_directory(path: Path) -> None:
+        """Persist directory entries on POSIX without breaking Windows."""
+
+        if os.name == "nt":
+            return
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(path, os.O_RDONLY)
+            os.fsync(descriptor)
+        except OSError:
+            pass
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    @staticmethod
+    def _sha256_path(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _discard_manifest(self) -> None:
+        try:
+            self._manifest_path.unlink(missing_ok=True)
+        except OSError:
+            return
+        self._best_effort_fsync_directory(self.uploads_dir)
+
+    @staticmethod
+    def _manifest_text(
+        payload: dict[str, object],
+        key: str,
+        *,
+        max_length: int = 512,
+    ) -> str:
+        value = payload.get(key)
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > max_length
+            or not value.isprintable()
+        ):
+            raise DatasetError("Le manifeste du dataset actif est invalide.")
+        return value
+
+    def _validate_manifest_payload(self, raw_payload: object) -> dict[str, object]:
+        """Validate an untrusted on-volume manifest without reading its dataset."""
+
+        expected_keys = {
+            "version",
+            "dataset_id",
+            "stored_filename",
+            "original_filename",
+            "name",
+            "context",
+            "updated_at",
+            "selected_sheet",
+            "available_sheets",
+            "rows",
+            "columns",
+            "size_bytes",
+            "sha256",
+        }
+        if not isinstance(raw_payload, dict) or set(raw_payload) != expected_keys:
+            raise DatasetError("Le manifeste du dataset actif est invalide.")
+        payload = dict(raw_payload)
+        version = payload.get("version")
+        if type(version) is not int or version != _ACTIVE_MANIFEST_VERSION:
+            raise DatasetError("Version de manifeste non prise en charge.")
+
+        dataset_id = self._manifest_text(payload, "dataset_id", max_length=32)
+        if _DATASET_ID_PATTERN.fullmatch(dataset_id) is None:
+            raise DatasetError("Identifiant de dataset persistant invalide.")
+
+        stored_filename = self._manifest_text(
+            payload, "stored_filename", max_length=64
+        )
+        stored_match = re.fullmatch(r"([0-9a-f]{32})(\.(?:csv|xlsx))", stored_filename)
+        if stored_match is None or stored_match.group(1) != dataset_id:
+            raise DatasetError("Nom de dataset persistant invalide.")
+
+        original_filename = self._manifest_text(
+            payload, "original_filename", max_length=512
+        )
+        if (
+            Path(original_filename).name != original_filename
+            or "/" in original_filename
+            or "\\" in original_filename
+            or Path(original_filename).suffix.lower() != stored_match.group(2)
+        ):
+            raise DatasetError("Nom de fichier source persistant invalide.")
+        self._manifest_text(payload, "name")
+        self._manifest_text(payload, "context")
+
+        updated_at = self._manifest_text(payload, "updated_at", max_length=64)
+        try:
+            parsed_timestamp = datetime.fromisoformat(updated_at)
+        except ValueError as exc:
+            raise DatasetError("Horodatage persistant invalide.") from exc
+        if (
+            parsed_timestamp.tzinfo is None
+            or parsed_timestamp.utcoffset() != timedelta(0)
+        ):
+            raise DatasetError("L'horodatage persistant doit être en UTC.")
+
+        selected_sheet_raw = payload.get("selected_sheet")
+        if selected_sheet_raw is not None and not isinstance(selected_sheet_raw, str):
+            raise DatasetError("Feuille persistante invalide.")
+        selected_sheet = _normalise_sheet_name(selected_sheet_raw)
+        available_sheets_raw = payload.get("available_sheets")
+        if not isinstance(available_sheets_raw, list):
+            raise DatasetError("Liste de feuilles persistante invalide.")
+        if len(available_sheets_raw) > self.limits.max_xlsx_entries:
+            raise DatasetError("Liste de feuilles persistante trop volumineuse.")
+        available_sheets: list[str] = []
+        for sheet in available_sheets_raw:
+            if not isinstance(sheet, str):
+                raise DatasetError("Liste de feuilles persistante invalide.")
+            normalized_sheet = _normalise_sheet_name(sheet)
+            if normalized_sheet is None:
+                raise DatasetError("Liste de feuilles persistante invalide.")
+            available_sheets.append(normalized_sheet)
+        if len(available_sheets) != len(set(available_sheets)):
+            raise DatasetError("Liste de feuilles persistante invalide.")
+
+        suffix = stored_match.group(2)
+        if suffix == ".csv":
+            if selected_sheet is not None or available_sheets:
+                raise DatasetError("Métadonnées de feuilles incompatibles avec le CSV.")
+        elif (
+            selected_sheet is None
+            or not available_sheets
+            or selected_sheet not in available_sheets
+        ):
+            raise DatasetError("Métadonnées de feuilles XLSX invalides.")
+
+        dimensions: dict[str, int] = {}
+        for key in ("rows", "columns", "size_bytes"):
+            value = payload.get(key)
+            if type(value) is not int or value <= 0:
+                raise DatasetError("Dimensions persistantes invalides.")
+            dimensions[key] = value
+        _validate_shape(dimensions["rows"], dimensions["columns"], self.limits)
+        if dimensions["size_bytes"] > self.limits.max_file_bytes:
+            raise DatasetError("Le fichier persistant dépasse la limite configurée.")
+
+        sha256 = self._manifest_text(payload, "sha256", max_length=64)
+        if _SHA256_PATTERN.fullmatch(sha256) is None:
+            raise DatasetError("Empreinte persistante invalide.")
+        return payload
+
+    def _restore_manifest(
+        self,
+    ) -> tuple[DatasetSnapshot, Path, dict[str, object]]:
+        """Verify the durable manifest and rebuild the exact active snapshot."""
+
+        if self._manifest_path.is_symlink():
+            raise DatasetError("Le manifeste du dataset actif est invalide.")
+        if self._manifest_path.stat().st_size > 64 * 1024:
+            raise DatasetError("Le manifeste du dataset actif est trop volumineux.")
+        try:
+            raw_payload = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise DatasetError("Le manifeste du dataset actif est illisible.") from exc
+        payload = self._validate_manifest_payload(raw_payload)
+
+        stored_filename = str(payload["stored_filename"])
+        stored_candidate = self.uploads_dir / stored_filename
+        if stored_candidate.is_symlink():
+            raise DatasetError("Chemin de dataset persistant invalide.")
+        stored_path = stored_candidate.resolve()
+        uploads_root = self.uploads_dir.resolve()
+        if uploads_root not in stored_path.parents:
+            raise DatasetError("Chemin de dataset persistant invalide.")
+        if not stored_path.is_file():
+            raise DatasetError("Le fichier du dataset actif est absent.")
+
+        # Bound the raw file before hashing or invoking a parser. The volume is
+        # untrusted startup input and may have been altered out-of-process.
+        actual_size = stored_path.stat().st_size
+        if actual_size > self.limits.max_file_bytes:
+            raise DatasetError("Le fichier persistant dépasse la limite configurée.")
+        if actual_size != payload["size_bytes"]:
+            raise DatasetError("La taille du dataset persistant a changé.")
+        if self._sha256_path(stored_path) != payload["sha256"]:
+            raise DatasetError("L'empreinte du dataset persistant a changé.")
+
+        parsed = _read_dataframe_path(
+            str(payload["original_filename"]),
+            stored_path,
+            self.limits,
+            (
+                payload["selected_sheet"]
+                if isinstance(payload["selected_sheet"], str)
+                else None
+            ),
+        )
+        rows, columns = parsed.dataframe.shape
+        if rows != payload["rows"] or columns != payload["columns"]:
+            raise DatasetError("Les dimensions du dataset persistant ont changé.")
+        if list(parsed.available_sheets) != payload["available_sheets"]:
+            raise DatasetError("La liste des feuilles du dataset persistant a changé.")
+        if parsed.selected_sheet != payload["selected_sheet"]:
+            raise DatasetError("La feuille active du dataset persistant a changé.")
+
+        original_filename = str(payload["original_filename"])
+        if payload["name"] != _display_name(original_filename):
+            raise DatasetError("Le nom du dataset persistant a changé.")
+        if payload["context"] != _infer_context(
+            original_filename,
+            list(parsed.dataframe.columns),
+        ):
+            raise DatasetError("Le contexte du dataset persistant a changé.")
+
+        snapshot = DatasetSnapshot(
+            id=str(payload["dataset_id"]),
+            name=str(payload["name"]),
+            source="upload",
+            updated_at=str(payload["updated_at"]),
+            context=str(payload["context"]),
+            dataframe=parsed.dataframe,
+            selected_sheet=parsed.selected_sheet,
+            available_sheets=parsed.available_sheets,
+        )
+        return snapshot, stored_path, payload
+
+    def _write_manifest_atomically(self, payload: dict[str, object]) -> None:
+        """Publish one private, versioned manifest through same-volume replace."""
+
+        validated_payload = self._validate_manifest_payload(payload)
+        encoded = (
+            json.dumps(
+                validated_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        if len(encoded) > 64 * 1024:
+            raise DatasetError("Le manifeste du dataset actif est trop volumineux.")
+        temporary_path = self.uploads_dir / (
+            f".active-dataset-{uuid.uuid4().hex}.tmp"
+        )
+        descriptor: int | None = os.open(
+            temporary_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = None
+                written = stream.write(encoded)
+                if written != len(encoded):
+                    raise OSError("Écriture partielle du manifeste actif.")
+                stream.flush()
+                try:
+                    os.fsync(stream.fileno())
+                except OSError:
+                    pass
+            os.replace(temporary_path, self._manifest_path)
+            self._best_effort_fsync_directory(self.uploads_dir)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    @staticmethod
+    def _build_manifest_payload(
+        snapshot: DatasetSnapshot,
+        *,
+        stored_filename: str,
+        original_filename: str,
+        size_bytes: int,
+        sha256: str,
+    ) -> dict[str, object]:
+        rows, columns = snapshot.dataframe.shape
+        return {
+            "version": _ACTIVE_MANIFEST_VERSION,
+            "dataset_id": snapshot.id,
+            "stored_filename": stored_filename,
+            "original_filename": original_filename,
+            "name": snapshot.name,
+            "context": snapshot.context,
+            "updated_at": snapshot.updated_at,
+            "selected_sheet": snapshot.selected_sheet,
+            "available_sheets": list(snapshot.available_sheets),
+            "rows": int(rows),
+            "columns": int(columns),
+            "size_bytes": size_bytes,
+            "sha256": sha256,
+        }
 
     @staticmethod
     def _copy_snapshot(snapshot: DatasetSnapshot) -> DatasetSnapshot:
@@ -522,6 +910,15 @@ class DatasetStore:
 
         with self._lock:
             return self._copy_snapshot(self._active)
+
+    def recovery_metadata(self) -> dict[str, str | None]:
+        """Expose a stable, non-sensitive recovery state for the overview."""
+
+        with self._lock:
+            return {
+                "status": self._recovery_status,
+                "message": self._recovery_message,
+            }
 
     def create_staged_upload(self) -> Path:
         """Reserve a private path used by the endpoint for incremental writes."""
@@ -555,14 +952,30 @@ class DatasetStore:
         des fichiers invalides dans ``data/uploads``.
         """
 
-        safe_original_name = Path(filename).name
+        safe_original_name = Path(filename.replace("\\", "/")).name
         suffix = Path(safe_original_name).suffix.lower()
         if suffix not in {".csv", ".xlsx"}:
             raise DatasetError("Format non pris en charge. Utilisez un fichier CSV ou XLSX.")
+        if (
+            not safe_original_name
+            or len(safe_original_name) > 512
+            or not safe_original_name.isprintable()
+        ):
+            raise DatasetError("Nom de fichier invalide.")
+        if staged_path.is_symlink():
+            raise DatasetError("Chemin temporaire invalide.")
         staged_path = staged_path.resolve()
         uploads_root = self.uploads_dir.resolve()
-        if uploads_root not in staged_path.parents:
+        if (
+            uploads_root not in staged_path.parents
+            or not staged_path.name.startswith(".upload-")
+            or not staged_path.is_file()
+        ):
             raise DatasetError("Chemin temporaire invalide.")
+        size_bytes = staged_path.stat().st_size
+        if size_bytes > self.limits.max_file_bytes:
+            raise DatasetError("Le fichier dépasse la limite configurée.")
+        sha256 = self._sha256_path(staged_path)
         parsed = _read_dataframe_path(
             safe_original_name,
             staged_path,
@@ -586,18 +999,63 @@ class DatasetStore:
             selected_sheet=parsed.selected_sheet,
             available_sheets=parsed.available_sheets,
         )
+        manifest_payload = self._build_manifest_payload(
+            snapshot,
+            stored_filename=stored_name,
+            original_filename=safe_original_name,
+            size_bytes=size_bytes,
+            sha256=sha256,
+        )
+        # The same strict validator used during recovery prevents publishing a
+        # state that the next process could not restore.
+        self._validate_manifest_payload(manifest_payload)
         with self._lock:
-            os.replace(staged_path, stored_path)
+            previous_stored_path = self._active_stored_path
+            previous_manifest_payload = (
+                dict(self._active_manifest_payload)
+                if self._active_manifest_payload is not None
+                else None
+            )
+
+            # Begin from one known durable target so a failed final prune can
+            # strictly roll back to the previous manifest and file.
+            self._prune_final_uploads(keep=previous_stored_path)
+
+            manifest_committed = False
             try:
+                os.replace(staged_path, stored_path)
+                self._best_effort_fsync_file(stored_path)
+                self._best_effort_fsync_directory(self.uploads_dir)
+                self._write_manifest_atomically(manifest_payload)
+                manifest_committed = True
                 self._prune_final_uploads(keep=stored_path)
-            except OSError as prune_error:
+            except OSError as commit_error:
+                rollback_error: OSError | None = None
                 try:
-                    stored_path.unlink(missing_ok=True)
-                except OSError as rollback_error:
-                    raise rollback_error from prune_error
+                    if manifest_committed:
+                        if previous_manifest_payload is None:
+                            self._manifest_path.unlink(missing_ok=True)
+                            self._best_effort_fsync_directory(self.uploads_dir)
+                        else:
+                            self._write_manifest_atomically(previous_manifest_payload)
+                except OSError as exc:
+                    rollback_error = exc
+                if rollback_error is None:
+                    try:
+                        stored_path.unlink(missing_ok=True)
+                        self._best_effort_fsync_directory(self.uploads_dir)
+                    except OSError as exc:
+                        rollback_error = exc
+                if rollback_error is not None:
+                    raise rollback_error from commit_error
                 raise
-            # Publish the in-memory snapshot only after disk retention succeeded.
+
+            # Publish memory only after file, manifest and retention succeeded.
             self._active = snapshot
+            self._active_stored_path = stored_path
+            self._active_manifest_payload = manifest_payload
+            self._recovery_status = "active"
+            self._recovery_message = None
             return self._copy_snapshot(snapshot)
 
     def activate_upload(

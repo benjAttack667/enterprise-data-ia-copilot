@@ -161,6 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_settings.samples_dir,
         active_settings.uploads_dir,
         DatasetLimits(
+            max_file_bytes=active_settings.max_upload_bytes,
             max_rows=active_settings.max_dataset_rows,
             max_columns=active_settings.max_dataset_columns,
             max_cells=active_settings.max_dataset_cells,
@@ -374,6 +375,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         snapshot = _active(request)
         payload = build_overview(snapshot)
+        payload["dataset_recovery"] = request.app.state.dataset_store.recovery_metadata()
         payload["storage"] = _storage_metrics(request)
         return payload
 
