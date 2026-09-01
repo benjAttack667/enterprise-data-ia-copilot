@@ -92,8 +92,14 @@ export type StorageUsage = {
   }
 }
 
+export type DatasetRecovery = {
+  status: 'sample' | 'active' | 'restored' | 'fallback'
+  message: string | null
+}
+
 export type OverviewResponse = {
   dataset: DatasetInfo
+  dataset_recovery: DatasetRecovery
   kpis: Kpi[]
   quality_score: number
   summary: string

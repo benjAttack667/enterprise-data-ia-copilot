@@ -92,7 +92,7 @@ export function DatasetProvider({ children }: { children: React.ReactNode }) {
       setError(null)
       setRevision((value) => value + 1)
     } catch (cause) {
-      if (cause instanceof ApiError && (cause.status === 404 || cause.status === 409)) {
+      if (cause instanceof ApiError && cause.status === 404) {
         setOverview(null)
       } else {
         setError(cause instanceof Error ? cause.message : 'Impossible de charger le dataset actif.')

@@ -30,6 +30,8 @@ ${ROBOT_SERVER}       ${FRONTEND_DIR}${/}scripts${/}robot-server.mjs
 ${SERVICE_TOKEN}      robot-backend-service-token-2026-at-least-32-bytes
 ${ACCESS_PASSWORD}    RobotDemoPassword!2026
 ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
+${INITIAL_BACKEND_ALIAS}     robot-backend-initial
+${RESTORED_BACKEND_ALIAS}    robot-backend-restored
 
 
 *** Test Cases ***
@@ -183,7 +185,26 @@ ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
     Page Should Contain    2 colonnes
     Page Should Contain    Feuille Details
 
-14 - Fermer puis rouvrir une session
+14 - Restaurer le dataset après redémarrage du backend
+    [Documentation]    Redémarre réellement FastAPI sur les mêmes fichiers persistants sans recréer le frontend ni le cookie de session.
+    Terminate Process    ${INITIAL_BACKEND_ALIAS}    kill=True
+    Démarrer le backend Robot    ${RESTORED_BACKEND_ALIAS}    backend-restart.log
+    Wait Until Keyword Succeeds    120s    1s    L'API doit répondre
+    Reload Page
+    Wait Until Page Contains    Multi Sheet    40s
+    Page Should Contain    3 lignes
+    Page Should Contain    2 colonnes
+    Page Should Contain    Feuille Details
+    Page Should Not Contain    Marketing Leads
+    Wait Until Element Is Visible    css:[data-testid="dataset-recovery-badge"]    20s
+    Element Should Contain    css:[data-testid="dataset-recovery-badge"]    Restauré
+    Page Should Not Contain Element    css:[data-testid="dataset-recovery-warning"]
+    Click Link    Historique
+    Wait Until Location Is    ${FRONTEND_URL}/history    20s
+    Wait Until Element Is Visible    xpath=//tr[td[normalize-space()="dataset_uploaded"] and td[contains(normalize-space(),"Multi Sheet")]]    40s
+    Element Should Contain    xpath=//tr[td[normalize-space()="dataset_uploaded"] and td[contains(normalize-space(),"Multi Sheet")]]    selected_sheet: Details
+
+15 - Fermer puis rouvrir une session
     [Documentation]    Vérifie que la déconnexion invalide le cookie avant de poursuivre la suite.
     Click Button    css:button[aria-label="Se déconnecter"]
     Wait Until Location Is    ${FRONTEND_URL}/login    20s
@@ -192,11 +213,13 @@ ${SESSION_SECRET}     robot-session-signing-secret-2026-at-least-32-bytes
     Input Password    css:input[name="password"]    ${ACCESS_PASSWORD}
     Click Button    xpath=//button[normalize-space()="Accéder au workspace"]
     Wait Until Location Is    ${FRONTEND_URL}/    20s
-    Wait Until Page Contains    Score qualité    30s
+    Wait Until Page Contains    Multi Sheet    30s
+    Page Should Contain    Feuille Details
+    Wait Until Element Is Visible    css:[data-testid="dataset-recovery-badge"]    20s
 
-15 - Signaler clairement une API indisponible
+16 - Signaler clairement une API indisponible
     [Documentation]    Coupe uniquement le backend Robot puis vérifie l'état d'erreur du frontend.
-    Terminate Process    robot-backend    kill=True
+    Terminate Process    ${RESTORED_BACKEND_ALIAS}    kill=True
     Reload Page
     Wait Until Page Contains    Chargement impossible    30s
     Page Should Contain    Le service d'analyse est temporairement indisponible
@@ -214,27 +237,7 @@ Démarrer la stack Robot
     # Une copie exacte permet au teardown de préserver le workspace du développeur.
     Copy File    ${FRONTEND_DIR}${/}next-env.d.ts    ${RUNTIME_DIR}${/}next-env.d.ts
     Copy File    ${FRONTEND_DIR}${/}tsconfig.json    ${RUNTIME_DIR}${/}tsconfig.json
-    Start Process
-    ...    ${PYTHON_COMMAND}
-    ...    -m
-    ...    uvicorn
-    ...    backend.main:app
-    ...    --host
-    ...    127.0.0.1
-    ...    --port
-    ...    8100
-    ...    cwd=${PROJECT_ROOT}
-    ...    alias=robot-backend
-    ...    stdout=${RESULTS_DIR}${/}backend.log
-    ...    stderr=STDOUT
-    ...    env:FRONTEND_ORIGINS=${FRONTEND_URL}
-    ...    env:COPILOT_ENVIRONMENT=production
-    ...    env:BACKEND_SERVICE_TOKEN=${SERVICE_TOKEN}
-    ...    env:API_DOCS_ENABLED=false
-    ...    env:OPENAI_API_KEY=${EMPTY}
-    ...    env:COPILOT_UPLOADS_DIR=${RUNTIME_DIR}${/}uploads
-    ...    env:COPILOT_REPORTS_DIR=${RUNTIME_DIR}${/}reports
-    ...    env:COPILOT_DATABASE_PATH=${RUNTIME_DIR}${/}history.db
+    Démarrer le backend Robot    ${INITIAL_BACKEND_ALIAS}    backend.log
     Start Process
     ...    ${NODE_COMMAND}
     ...    ${ROBOT_SERVER}
@@ -271,6 +274,31 @@ Le frontend doit répondre
 Arrêter la stack Robot
     Run Keyword And Ignore Error    Close All Browsers
     Run Keyword And Ignore Error    Terminate Process    robot-frontend    kill=True
-    Run Keyword And Ignore Error    Terminate Process    robot-backend    kill=True
+    Run Keyword And Ignore Error    Terminate Process    ${INITIAL_BACKEND_ALIAS}    kill=True
+    Run Keyword And Ignore Error    Terminate Process    ${RESTORED_BACKEND_ALIAS}    kill=True
     Run Keyword And Ignore Error    Copy File    ${RUNTIME_DIR}${/}next-env.d.ts    ${FRONTEND_DIR}${/}next-env.d.ts
     Run Keyword And Ignore Error    Copy File    ${RUNTIME_DIR}${/}tsconfig.json    ${FRONTEND_DIR}${/}tsconfig.json
+
+Démarrer le backend Robot
+    [Arguments]    ${alias}    ${log_name}
+    Start Process
+    ...    ${PYTHON_COMMAND}
+    ...    -m
+    ...    uvicorn
+    ...    backend.main:app
+    ...    --host
+    ...    127.0.0.1
+    ...    --port
+    ...    8100
+    ...    cwd=${PROJECT_ROOT}
+    ...    alias=${alias}
+    ...    stdout=${RESULTS_DIR}${/}${log_name}
+    ...    stderr=STDOUT
+    ...    env:FRONTEND_ORIGINS=${FRONTEND_URL}
+    ...    env:COPILOT_ENVIRONMENT=production
+    ...    env:BACKEND_SERVICE_TOKEN=${SERVICE_TOKEN}
+    ...    env:API_DOCS_ENABLED=false
+    ...    env:OPENAI_API_KEY=${EMPTY}
+    ...    env:COPILOT_UPLOADS_DIR=${RUNTIME_DIR}${/}uploads
+    ...    env:COPILOT_REPORTS_DIR=${RUNTIME_DIR}${/}reports
+    ...    env:COPILOT_DATABASE_PATH=${RUNTIME_DIR}${/}history.db

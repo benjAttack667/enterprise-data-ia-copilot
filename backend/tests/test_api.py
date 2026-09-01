@@ -36,8 +36,10 @@ def test_health_and_default_marketing_overview(client: TestClient) -> None:
         "series_kind",
         "trend_series_kind",
         "trend_meta",
+        "dataset_recovery",
         "storage",
     }
+    assert payload["dataset_recovery"] == {"status": "sample", "message": None}
     assert payload["series_kind"] == payload["trend_meta"]["series_kind"]
     assert payload["storage"]["uploads"]["max_files"] == 1
     assert payload["storage"]["reports"]["max_files"] == 20

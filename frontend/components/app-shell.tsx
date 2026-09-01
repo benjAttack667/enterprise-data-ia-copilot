@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { usePathname } from 'next/navigation'
+import { AlertTriangle } from 'lucide-react'
 import { Sidebar } from '@/components/sidebar'
 import { Header } from '@/components/header'
 import { DatasetProvider, useDataset } from '@/components/dataset-provider'
@@ -45,6 +46,13 @@ function AppFrame({
   // The dialog owns the live error region while a workbook choice is pending;
   // rendering the banner too would announce the same failure twice.
   const visibleError = sheetSelection ? null : uploadError ?? (overview ? error : null)
+  const recoveryWarning = overview?.dataset_recovery?.status === 'fallback'
+    ? overview.dataset_recovery.message ??
+      'Le dernier dataset importé n’a pas pu être restauré. Le dataset de démonstration est affiché.'
+    : null
+  const datasetKey = overview?.dataset.id === undefined
+    ? `revision:${revision}`
+    : `dataset:${overview.dataset.id}`
   return (
     <div className="flex min-h-screen bg-background">
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
@@ -69,7 +77,20 @@ function AppFrame({
             <button type="button" className="font-medium underline-offset-2 hover:underline" onClick={clearError}>Fermer</button>
           </div>
         ) : null}
-        <main key={revision} className="flex-1 px-4 py-6 lg:px-6 lg:py-8">{children}</main>
+        {recoveryWarning ? (
+          <div
+            role="alert"
+            data-testid="dataset-recovery-warning"
+            className="flex items-start gap-2 border-b border-warning/25 bg-warning/10 px-4 py-3 text-xs text-foreground lg:px-6"
+          >
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden="true" />
+            <span>
+              <strong className="font-semibold">Reprise incomplète. </strong>
+              {recoveryWarning}
+            </span>
+          </div>
+        ) : null}
+        <main key={datasetKey} className="flex-1 px-4 py-6 lg:px-6 lg:py-8">{children}</main>
       </div>
     </div>
   )
