@@ -116,7 +116,8 @@ ${RESTORED_BACKEND_ALIAS}    robot-backend-restored
     Press Keys    css:textarea    RETURN
     Wait Until Element Contains    css:[role="alert"]    Quota global de l’assistant atteint    30s
     Element Should Contain    css:[role="alert"]    dans environ 10 minutes
-    Textfield Value Should Be    css:textarea    Cette question doit rester dans le champ
+    ${restored_question}=    Get Value    css:textarea
+    Should Be Equal    ${restored_question}    Cette question doit rester dans le champ
     ${assistant_count_after}=    Get Element Count    xpath=//*[@data-testid="assistant-message"]
     Should Be Equal As Integers    ${assistant_count_after}    ${assistant_count}
 
