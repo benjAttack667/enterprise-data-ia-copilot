@@ -21,6 +21,8 @@ La démo publique est protégée par un mot de passe partagé. Elle doit être u
 - détection multivariée avec `IsolationForest`, exclusion des identifiants, gestion robuste des valeurs absentes et `random_state=42` ;
 - synthèse et questions en langage naturel via l'API OpenAI ;
 - fallback local déterministe lorsqu'aucune clé OpenAI n'est fournie ou que l'API est indisponible ;
+- quota global des appels IA, limite de sortie et télémétrie persistante des tokens/coûts estimés sans conserver les questions ni les réponses ;
+- cache LRU borné des analyses Pandas et IsolationForest, isolé par dataset et paramètres ;
 - génération et téléchargement de rapports Markdown ou HTML ;
 - historique réel des opérations dans SQLite.
 
@@ -108,6 +110,12 @@ API_DOCS_ENABLED=true
 
 OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MAX_OUTPUT_TOKENS=600
+AI_RATE_LIMIT_REQUESTS=20
+AI_RATE_LIMIT_WINDOW_SECONDS=600
+MAX_AI_USAGE_ENTRIES=1000
+ANALYSIS_CACHE_MAX_ENTRIES=32
+ANALYSIS_CACHE_MAX_BYTES=8388608
 FRONTEND_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 MAX_UPLOAD_BYTES=10485760
 MAX_DATASET_ROWS=100000
@@ -133,7 +141,9 @@ SESSION_SECRET=<secret-aléatoire-de-32-octets-minimum>
 
 Générez séparément le jeton backend et le secret de session avec `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Utilisez une troisième valeur forte comme mot de passe de démonstration. Ne commitez jamais ces valeurs.
 
-La clé OpenAI reste exclusivement côté serveur. Lorsqu'elle est active, la question utilisateur, le schéma, les métadonnées, les KPI et les statistiques agrégées sont envoyés au modèle — jamais le fichier complet ni ses lignes brutes. L'appel Responses API utilise `store=False`. Sans clé, en cas de timeout, de quota ou de clé invalide, l'interface affiche explicitement le mode local.
+La clé OpenAI reste exclusivement côté serveur. Lorsqu'elle est active, la question utilisateur, le schéma, les métadonnées, les KPI et les statistiques agrégées sont envoyés au modèle — jamais le fichier complet ni ses lignes brutes. L'appel Responses API utilise `store=False` et borne la sortie à `OPENAI_MAX_OUTPUT_TOKENS`. Sans clé, en cas de timeout, de quota ou de clé invalide, l'interface affiche explicitement le mode local.
+
+Les compteurs proviennent du champ `usage` de la [Responses API](https://developers.openai.com/api/reference/resources/responses/methods/retrieve). Pour le modèle par défaut `gpt-4.1-mini`, l'application estime le coût avec les [tarifs officiels du modèle](https://developers.openai.com/api/docs/models/gpt-4.1-mini) : entrée non cachée, entrée cachée et sortie sont comptées séparément. Ce montant est une estimation applicative des réponses mesurées, pas une facture OpenAI. Un modèle sans tarif enregistré ou un appel interrompu conserve ses tokens/coûts à `null` au lieu d'inventer un montant. SQLite ne reçoit que l'opération, le fournisseur, le modèle, les compteurs et le coût estimé — jamais le prompt, la question, les agrégats ou la réponse.
 
 ## Exécution avec Docker Compose
 
@@ -208,6 +218,7 @@ Utilisez une variable partagée Railway pour `BACKEND_SERVICE_TOKEN` afin d'évi
 | `GET` | `/api/dashboard` | agrégation compatible Recharts |
 | `POST` | `/api/ai-summary` | synthèse OpenAI ou locale |
 | `POST` | `/api/ask` | réponse factuelle sur les agrégats disponibles |
+| `GET` | `/api/ai-usage` | quota de l'instance et télémétrie IA persistée sans contenu utilisateur |
 | `GET` | `/api/anomalies` | lignes signalées par IsolationForest |
 | `POST` | `/api/report` | rapport Markdown ou HTML réel |
 | `GET` | `/api/history` | opérations persistées dans SQLite |
@@ -218,7 +229,11 @@ Un garde ASGI vérifie le jeton de service et la taille du corps avant que FastA
 
 L'ingestion écrit chaque fichier par blocs dans un temporaire situé sur le même volume, calcule son empreinte SHA-256, valide sa taille et sa structure, puis publie un manifeste JSON privé, versionné et remplacé atomiquement. Au démarrage, le backend vérifie le confinement du chemin, la taille, l'empreinte et les métadonnées avant de reparcourir le fichier avec les mêmes limites que lors de l'import. Pour un import retenu, un manifeste absent, tronqué ou incohérent déclenche un repli explicite sur l'échantillon, jamais une sélection par date de modification.
 
-La démo accepte au plus 10 imports par fenêtre de 10 minutes. Un verrou partagé autorise un seul import ou calcul analytique lourd à la fois par instance et renvoie `429` avec `Retry-After` lorsqu'elle est occupée. Elle conserve au plus le dernier fichier importé, les 20 rapports les plus récents et 500 événements métier ; un échec de restauration de ces quotas fait échouer l'écriture au lieu de laisser le stockage croître silencieusement. Les simples consultations `GET` ne remplissent plus l'historique SQLite. Cette persistance est conçue pour l'unique processus backend de démonstration ; plusieurs réplicas nécessiteraient un verrou distribué et un stockage partagé transactionnel.
+La démo accepte au plus 10 imports et 20 requêtes IA par fenêtre de 10 minutes, dans deux compteurs distincts. Le quota IA est vérifié avant le parsing JSON et partagé entre `/api/ask` et `/api/ai-summary`, y compris en mode fallback ; un dépassement renvoie `429` avec `Retry-After`. Ces compteurs sont globaux, en mémoire et réinitialisés au redémarrage de l'unique processus : ce ne sont ni des quotas par utilisateur ni des quotas OpenAI distribués.
+
+Un verrou partagé autorise un seul import ou calcul analytique lourd à la fois par instance et renvoie `429` avec `Retry-After` lorsqu'elle est occupée. Le cache d'analyses conserve au plus 32 résultats dans un budget estimé de 8 Mio pour les objets retenus, avec des clés composées de l'identifiant immuable du dataset, de l'opération et de ses options. Une réponse qui dépasse seule ce budget est calculée mais n'est pas mémorisée. Le cache réutilise le bundle qualité/anomalies/overview pour l'IA et les rapports, met en cache les agrégations de dashboard dans la limite du budget et élimine les résultats de l'ancien dataset après un import. Ces octets estiment la taille profonde des objets Python mis en cache, pas la mémoire totale du processus. Les métriques concernent uniquement l'instance active ; le cache est vide après un redémarrage.
+
+La plateforme conserve au plus le dernier fichier importé, les 20 rapports les plus récents, 500 événements métier et 1 000 événements de télémétrie IA ; un échec de restauration de ces quotas fait échouer l'écriture au lieu de laisser le stockage croître silencieusement. Les simples consultations `GET` ne remplissent plus l'historique SQLite. Cette persistance est conçue pour l'unique processus backend de démonstration ; plusieurs réplicas nécessiteraient un verrou distribué et un stockage partagé transactionnel.
 
 Pour un CSV, le backend teste uniquement la virgule, le point-virgule et la tabulation, vérifie la cohérence de toutes les lignes, puis transmet le même encodage et le même séparateur à Pandas. Un format ambigu est refusé plutôt qu'interprété silencieusement. Pour un XLSX à plusieurs feuilles, le premier envoi retourne la liste des feuilles de données sans activer ni conserver le fichier ; l'utilisateur choisit ensuite la feuille exacte dans l'interface et confirme l'import. Ce flux prudent transfère donc deux fois un classeur multi-feuilles et consomme deux tentatives du quota d'import.
 
@@ -242,7 +257,7 @@ npm run lint
 npm run build
 ```
 
-La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les types sémantiques et identifiants, les dates UTC/françaises/ambiguës, la sérialisation JSON stricte des absences, IsolationForest sur nombres textuels et valeurs extrêmes, les séparateurs CSV et champs cités, la sélection de feuille Excel, la restauration CSV/XLSX après redémarrage, l'intégrité et le rollback du manifeste, le streaming CSV/XLSX, les seuils exacts de ressources, les flux sans longueur fiable, la protection des archives Excel, le rate limiting, la concurrence, les erreurs de stockage `507`, la rétention, l'authentification précoce du service, le démarrage fail-closed, le fallback IA et les rapports.
+La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les types sémantiques et identifiants, les dates UTC/françaises/ambiguës, la sérialisation JSON stricte des absences, IsolationForest sur nombres textuels et valeurs extrêmes, les séparateurs CSV et champs cités, la sélection de feuille Excel, la restauration CSV/XLSX après redémarrage, l'intégrité et le rollback du manifeste, le streaming CSV/XLSX, les seuils exacts de ressources, les flux sans longueur fiable, la protection des archives Excel, les quotas import/IA, la concurrence, les erreurs de stockage `507`, les caches isolés et bornés, la tarification des tokens cachés, la télémétrie SQLite sans contenu, la rétention, l'authentification précoce du service, le démarrage fail-closed, le fallback IA et les rapports.
 
 ### Parcours E2E avec Robot Framework
 
@@ -250,7 +265,7 @@ La suite Robot démarre automatiquement une stack isolée sur les ports `3100` e
 
 Les uploads, rapports et événements SQLite du parcours E2E sont écrits dans `tests/robot/results/runtime/`. Le run recrée cet espace avant chaque exécution : il ne modifie donc pas les données locales de démonstration du backend.
 
-Le parcours comporte 17 scénarios : authentification, protection directe du backend, déconnexion, workflow nominal complet, CSV point-virgule avec champ cité, choix d'une feuille Excel, restauration de ce dataset après un vrai redémarrage FastAPI, XLSX corrompu, atomicité de l'import, détection non applicable, dataset entièrement numérique et indisponibilité de l'API.
+Le parcours comporte 17 scénarios : authentification, protection directe du backend, déconnexion, workflow nominal complet, quota IA avec conservation de la question refusée, CSV point-virgule avec champ cité, choix d'une feuille Excel, restauration de ce dataset après un vrai redémarrage FastAPI, XLSX corrompu, atomicité de l'import, détection non applicable, dataset entièrement numérique et indisponibilité de l'API.
 
 ```powershell
 # Depuis la racine du projet
@@ -271,7 +286,7 @@ Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml
 3. Montrer que le contexte passe réellement à 12 lignes et 10 colonnes sur toutes les vues.
 4. Expliquer le score Data Quality puis modifier dimension, mesure et agrégation dans le dashboard.
 5. Relancer IsolationForest et examiner les colonnes contributrices d'une anomalie.
-6. Poser une question à l'assistant, en montrant le badge OpenAI ou fallback local.
+6. Poser une question à l'assistant, en montrant le badge fournisseur, le quota global, les tokens mesurés et le coût estimé — ou l'absence explicite d'appel OpenAI en fallback local.
 7. Générer un rapport HTML, le télécharger, puis retrouver l'opération dans l'historique SQLite.
 
 ## Captures d'écran
@@ -298,4 +313,4 @@ Les captures ci-dessous proviennent de l'application Docker réelle avec le data
 
 Docker Compose rend l'exécution reproductible, mais ne remplace pas une plateforme SaaS multi-tenant : sauvegardes automatisées, stockage objet, quotas distribués et orchestration asynchrone restent à ajouter avant de traiter des données réelles.
 
-Cette version implémente une barrière d'accès et des limites de ressources adaptées à une démonstration publique : mot de passe partagé, cookie HTTP-only signé, jeton privé entre Next.js et FastAPI, corps HTTP et ingestion bornés, sérialisation des calculs lourds et rétention automatique. Elle ne fournit pas encore de comptes individuels, de rôles, d'isolation multi-tenant, de stockage objet cloud ni de file de tâches. Tous les utilisateurs autorisés partagent encore le même dataset actif ; le compteur de fréquence et le verrou de calcul restent locaux à l'unique instance de démonstration. Les appels IA et les calculs analytiques ne disposent pas encore d'un quota distribué ou par utilisateur : le contrôle des coûts OpenAI constitue une étape de durcissement distincte avant une ouverture publique sans supervision.
+Cette version implémente une barrière d'accès et des limites de ressources adaptées à une démonstration publique : mot de passe partagé, cookie HTTP-only signé, jeton privé entre Next.js et FastAPI, corps HTTP et ingestion bornés, quotas locaux import/IA, limite de sortie OpenAI, cache borné, télémétrie de coût et rétention automatique. Elle ne fournit pas encore de comptes individuels, de rôles, d'isolation multi-tenant, de stockage objet cloud ni de file de tâches. Tous les utilisateurs autorisés partagent encore le même dataset actif ; les compteurs de fréquence, le cache et le verrou de calcul restent locaux à l'unique instance de démonstration. Une ouverture multi-réplica ou multi-tenant demanderait des quotas distribués, une comptabilité par utilisateur et un rapprochement avec la facturation officielle du fournisseur.

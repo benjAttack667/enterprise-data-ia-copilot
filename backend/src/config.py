@@ -26,8 +26,14 @@ RESOURCE_INTEGER_UPPER_BOUNDS = {
     "MAX_XLSX_ENTRIES": 1_000,
     "UPLOAD_RATE_LIMIT_REQUESTS": 100,
     "UPLOAD_RATE_LIMIT_WINDOW_SECONDS": 86_400,
+    "AI_RATE_LIMIT_REQUESTS": 1_000,
+    "AI_RATE_LIMIT_WINDOW_SECONDS": 86_400,
+    "OPENAI_MAX_OUTPUT_TOKENS": 4_096,
     "MAX_REPORT_FILES": 200,
     "MAX_HISTORY_ENTRIES": 10_000,
+    "MAX_AI_USAGE_ENTRIES": 10_000,
+    "ANALYSIS_CACHE_MAX_ENTRIES": 128,
+    "ANALYSIS_CACHE_MAX_BYTES": 32 * 1024 * 1024,
 }
 MAX_XLSX_COMPRESSION_RATIO_LIMIT = 100.0
 load_dotenv(BACKEND_DIR / ".env")
@@ -79,10 +85,16 @@ class Settings:
     max_xlsx_entries: int = 1_000
     upload_rate_limit_requests: int = 10
     upload_rate_limit_window_seconds: int = 600
+    ai_rate_limit_requests: int = 20
+    ai_rate_limit_window_seconds: int = 600
     max_report_files: int = 20
     max_history_entries: int = 500
+    max_ai_usage_entries: int = 1_000
+    analysis_cache_max_entries: int = 32
+    analysis_cache_max_bytes: int = 8 * 1024 * 1024
     openai_api_key: str | None = None
     openai_model: str = "gpt-4.1-mini"
+    openai_max_output_tokens: int = 600
     environment: Literal["local", "test", "production"] = "local"
     backend_service_token: str | None = None
     api_docs_enabled: bool | None = None
@@ -111,8 +123,14 @@ class Settings:
             "MAX_XLSX_ENTRIES": self.max_xlsx_entries,
             "UPLOAD_RATE_LIMIT_REQUESTS": self.upload_rate_limit_requests,
             "UPLOAD_RATE_LIMIT_WINDOW_SECONDS": self.upload_rate_limit_window_seconds,
+            "AI_RATE_LIMIT_REQUESTS": self.ai_rate_limit_requests,
+            "AI_RATE_LIMIT_WINDOW_SECONDS": self.ai_rate_limit_window_seconds,
+            "OPENAI_MAX_OUTPUT_TOKENS": self.openai_max_output_tokens,
             "MAX_REPORT_FILES": self.max_report_files,
             "MAX_HISTORY_ENTRIES": self.max_history_entries,
+            "MAX_AI_USAGE_ENTRIES": self.max_ai_usage_entries,
+            "ANALYSIS_CACHE_MAX_ENTRIES": self.analysis_cache_max_entries,
+            "ANALYSIS_CACHE_MAX_BYTES": self.analysis_cache_max_bytes,
         }
         invalid_setting = next(
             (
@@ -229,10 +247,28 @@ class Settings:
             upload_rate_limit_window_seconds=int(
                 os.getenv("UPLOAD_RATE_LIMIT_WINDOW_SECONDS", "600")
             ),
+            ai_rate_limit_requests=int(
+                os.getenv("AI_RATE_LIMIT_REQUESTS", "20")
+            ),
+            ai_rate_limit_window_seconds=int(
+                os.getenv("AI_RATE_LIMIT_WINDOW_SECONDS", "600")
+            ),
             max_report_files=int(os.getenv("MAX_REPORT_FILES", "20")),
             max_history_entries=int(os.getenv("MAX_HISTORY_ENTRIES", "500")),
+            max_ai_usage_entries=int(
+                os.getenv("MAX_AI_USAGE_ENTRIES", "1000")
+            ),
+            analysis_cache_max_entries=int(
+                os.getenv("ANALYSIS_CACHE_MAX_ENTRIES", "32")
+            ),
+            analysis_cache_max_bytes=int(
+                os.getenv("ANALYSIS_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
+            ),
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+            openai_max_output_tokens=int(
+                os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "600")
+            ),
             environment=environment,
             backend_service_token=os.getenv("BACKEND_SERVICE_TOKEN") or None,
             api_docs_enabled=_boolean_from_env(

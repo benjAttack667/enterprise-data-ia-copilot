@@ -26,6 +26,7 @@ HEAVY_WORKLOAD_PATHS = frozenset(
         "/api/report",
     }
 )
+AI_REQUEST_PATHS = frozenset({"/api/ai-summary", "/api/ask"})
 
 
 class _RequestBodyTooLarge(Exception):
@@ -87,10 +88,15 @@ class BusinessRequestGuardMiddleware:
         settings: Settings,
         rate_limiter: SlidingWindowRateLimiter,
         workload_gate: threading.BoundedSemaphore,
+        ai_rate_limiter: SlidingWindowRateLimiter | None = None,
     ) -> None:
         self.app = app
         self.settings = settings
         self.rate_limiter = rate_limiter
+        self.ai_rate_limiter = ai_rate_limiter or SlidingWindowRateLimiter(
+            settings.ai_rate_limit_requests,
+            settings.ai_rate_limit_window_seconds,
+        )
         self.workload_gate = workload_gate
         self.max_upload_body_bytes = (
             settings.max_upload_bytes + MULTIPART_OVERHEAD_BYTES
@@ -105,10 +111,17 @@ class BusinessRequestGuardMiddleware:
         status_code: int,
         detail: str,
         headers: dict[str, str] | None = None,
+        code: str | None = None,
     ) -> None:
         response = JSONResponse(
             status_code=status_code,
-            content={"detail": detail},
+            content={
+                "detail": (
+                    {"code": code, "message": detail}
+                    if code is not None
+                    else detail
+                )
+            },
             headers=headers,
         )
         await response(scope, receive, send)
@@ -146,6 +159,9 @@ class BusinessRequestGuardMiddleware:
             )
             return
         is_upload = path == "/api/upload"
+        is_ai_request = (
+            scope.get("method") == "POST" and path in AI_REQUEST_PATHS
+        )
         max_body_bytes = (
             self.max_upload_body_bytes
             if is_upload
@@ -193,6 +209,24 @@ class BusinessRequestGuardMiddleware:
                     status_code=429,
                     detail="Quota global d'uploads temporairement atteint.",
                     headers={"Retry-After": str(decision.retry_after_seconds)},
+                )
+                return
+
+        if is_ai_request:
+            decision = self.ai_rate_limiter.consume()
+            if not decision.allowed:
+                # The quota is decided before JSON parsing or endpoint work.
+                if gate_acquired:
+                    self.workload_gate.release()
+                    gate_acquired = False
+                await self._respond(
+                    scope,
+                    receive,
+                    send,
+                    status_code=429,
+                    detail="Quota global de requêtes IA temporairement atteint.",
+                    headers={"Retry-After": str(decision.retry_after_seconds)},
+                    code="ai_quota_exceeded",
                 )
                 return
 

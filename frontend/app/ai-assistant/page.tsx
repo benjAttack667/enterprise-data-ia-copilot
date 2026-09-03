@@ -7,8 +7,14 @@ import { Card } from '@/components/ui/card'
 import { Textarea } from '@/components/ui/textarea'
 import { PageHeader } from '@/components/page-header'
 import { EmptyDatasetState, ErrorState, LoadingState } from '@/components/async-state'
+import {
+  AiResponseMetadata,
+  AiTelemetryCard,
+} from '@/components/ai-telemetry'
 import { useDataset } from '@/components/dataset-provider'
-import { api, type AiResponse } from '@/lib/data'
+import { formatRetryDelay } from '@/lib/ai-format'
+import { api, ApiError, type AiResponse } from '@/lib/data'
+import { useApiResource } from '@/lib/use-api-resource'
 
 type Message = { role: 'user'; content: string } | { role: 'assistant'; content: AiResponse }
 
@@ -18,17 +24,23 @@ const questionSuggestions = [
   'Quelles actions recommandes-tu sur ce dataset ?',
 ]
 
-function ModeBadge({ mode }: { mode?: string }) {
-  if (!mode) return null
-  return (
-    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary ring-1 ring-inset ring-primary/20">
-      {mode === 'openai' ? 'OpenAI' : 'Fallback local'}
-    </span>
-  )
+function assistantErrorMessage(cause: unknown, fallback: string) {
+  if (cause instanceof ApiError && cause.status === 429) {
+    const retry = formatRetryDelay(cause.retryAfterSeconds)
+    if (cause.detail?.code === 'ai_quota_exceeded') {
+      return `Quota global de l’assistant atteint. Réessayez ${retry}.`
+    }
+    return `${cause.message} Réessayez ${retry}.`
+  }
+  return cause instanceof Error ? cause.message : fallback
 }
 
 export default function AiAssistantPage() {
   const datasetState = useDataset()
+  const telemetry = useApiResource(api.aiUsage, {
+    enabled: !datasetState.loading && Boolean(datasetState.overview),
+    revision: datasetState.revision,
+  })
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [summary, setSummary] = useState<AiResponse | null>(null)
@@ -45,9 +57,12 @@ export default function AiAssistantPage() {
     setGenerating(true)
     setError(null)
     try {
-      setSummary(await api.aiSummary())
+      const nextSummary = await api.aiSummary()
+      setSummary(nextSummary)
+      void telemetry.reload()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'La synthèse a échoué.')
+      setError(assistantErrorMessage(cause, 'La synthèse a échoué.'))
+      void telemetry.reload()
     } finally {
       setGenerating(false)
     }
@@ -56,15 +71,22 @@ export default function AiAssistantPage() {
   async function send(question: string) {
     const value = question.trim()
     if (!value || sending) return
-    setMessages((previous) => [...previous, { role: 'user', content: value }])
+    const optimisticMessage: Message = { role: 'user', content: value }
+    setMessages((previous) => [...previous, optimisticMessage])
     setInput('')
     setSending(true)
     setError(null)
     try {
       const answer = await api.ask(value)
       setMessages((previous) => [...previous, { role: 'assistant', content: answer }])
+      void telemetry.reload()
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "L'assistant n'a pas pu répondre.")
+      // Ne laissez pas une question sans réponse dans la conversation et
+      // restituez-la uniquement si l'utilisateur n'a pas déjà commencé la suivante.
+      setMessages((previous) => previous.filter((message) => message !== optimisticMessage))
+      setInput((current) => current.trim() ? current : value)
+      setError(assistantErrorMessage(cause, "L'assistant n'a pas pu répondre."))
+      void telemetry.reload()
     } finally {
       setSending(false)
     }
@@ -85,7 +107,13 @@ export default function AiAssistantPage() {
     <div className="mx-auto max-w-5xl">
       <PageHeader title="Assistant IA" description="Questions et synthèses fondées sur les données réellement chargées" />
 
-      {error ? <div className="mb-4 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
+      <AiTelemetryCard
+        data={telemetry.data}
+        loading={telemetry.loading}
+        error={telemetry.error}
+      />
+
+      {error ? <div role="alert" className="mb-4 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div> : null}
 
       <Card className="mb-4 bg-gradient-to-br from-accent to-card p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -93,11 +121,11 @@ export default function AiAssistantPage() {
             <div className="flex items-center gap-2">
               <span className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary"><Sparkles className="size-4" /></span>
               <h3 className="text-sm font-semibold text-foreground">Synthèse du dataset actif</h3>
-              <ModeBadge mode={summary?.mode} />
             </div>
             {summary ? (
               <div className="mt-3 space-y-3">
                 <p className="text-sm leading-relaxed text-foreground">{summary.summary}</p>
+                <AiResponseMetadata response={summary} />
                 {summary.recommendations?.length ? (
                   <ul className="space-y-1.5 text-sm text-muted-foreground">
                     {summary.recommendations.map((item, index) => <li key={index} className="flex gap-2"><ArrowRight className="mt-0.5 size-4 shrink-0 text-primary" />{item}</li>)}
@@ -139,9 +167,9 @@ export default function AiAssistantPage() {
             ) : (
               <div key={index} className="flex items-start gap-3">
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"><Sparkles className="size-4" /></span>
-                <div data-testid="assistant-message" className="max-w-[85%] rounded-2xl rounded-tl-sm border border-border bg-muted/40 px-4 py-3.5">
-                  <div className="mb-2"><ModeBadge mode={message.content.mode} /></div>
+                <div aria-live="polite" data-testid="assistant-message" className="max-w-[85%] rounded-2xl rounded-tl-sm border border-border bg-muted/40 px-4 py-3.5">
                   <p className="text-sm leading-relaxed text-foreground">{message.content.summary}</p>
+                  <AiResponseMetadata response={message.content} />
                   {message.content.suggestions?.length ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {message.content.suggestions.map((suggestion) => (
@@ -153,12 +181,12 @@ export default function AiAssistantPage() {
               </div>
             ))
           )}
-          {sending ? <div className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Analyse en cours…</div> : null}
+          {sending ? <div role="status" className="flex items-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="size-4 animate-spin" />Analyse en cours…</div> : null}
         </div>
 
         <div className="border-t border-border p-3">
           <div className="flex items-end gap-2">
-            <Textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} rows={1} placeholder="Posez une question sur le dataset…" className="max-h-32 min-h-10 resize-none" />
+            <Textarea aria-label="Question à poser au Data Copilot" value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={onKeyDown} rows={1} placeholder="Posez une question sur le dataset…" className="max-h-32 min-h-10 resize-none" />
             <Button size="icon" className="size-10 shrink-0" disabled={sending || !input.trim()} onClick={() => void send(input)} aria-label="Envoyer la question">
               {sending ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
             </Button>

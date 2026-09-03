@@ -14,6 +14,9 @@ import {
 import { EmptyDatasetState, ErrorState, LoadingState } from '@/components/async-state'
 import { useDataset } from '@/components/dataset-provider'
 import { StorageUsageCard } from '@/components/storage-usage-card'
+import { OperationsCard } from '@/components/operations-card'
+import { api } from '@/lib/data'
+import { useApiResource } from '@/lib/use-api-resource'
 
 function formatUpdatedAt(value?: string) {
   if (!value) return 'analyse courante'
@@ -50,7 +53,11 @@ function seriesCopy(kind?: string) {
 }
 
 export default function OverviewPage() {
-  const { overview, loading, error, refresh } = useDataset()
+  const { overview, loading, error, refresh, revision } = useDataset()
+  const aiUsage = useApiResource(api.aiUsage, {
+    enabled: Boolean(overview) && !loading,
+    revision,
+  })
 
   if (loading && !overview) return <LoadingState />
   if (error && !overview) return <ErrorState message={error} retry={refresh} />
@@ -99,6 +106,15 @@ export default function OverviewPage() {
       {overview.storage ? (
         <section aria-label="Capacité du workspace" className="mt-4">
           <StorageUsageCard storage={overview.storage} />
+        </section>
+      ) : null}
+
+      {overview.analysis_cache ? (
+        <section aria-label="Opérations de l’instance" className="mt-4">
+          <OperationsCard
+            cache={overview.analysis_cache}
+            aiUsage={aiUsage.data ?? overview.ai_usage}
+          />
         </section>
       ) : null}
     </div>

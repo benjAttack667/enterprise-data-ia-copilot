@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+
+from .ai_usage import not_attempted_usage, unavailable_usage, usage_from_response
 
 
 def _now() -> str:
@@ -71,37 +74,84 @@ def _aggregate_context(
     }
 
 
+@dataclass(frozen=True)
+class _OpenAIResult:
+    """Text and billing telemetry returned by one optional provider call."""
+
+    text: str | None
+    usage: dict[str, Any]
+
+
 class AIService:
     """Utilise OpenAI si configuré, sinon répond à partir des statistiques locales."""
 
-    def __init__(self, api_key: str | None, model: str) -> None:
+    def __init__(
+        self,
+        api_key: str | None,
+        model: str,
+        max_output_tokens: int = 600,
+    ) -> None:
+        if (
+            isinstance(max_output_tokens, bool)
+            or not isinstance(max_output_tokens, int)
+            or not 1 <= max_output_tokens <= 4_096
+        ):
+            raise ValueError("max_output_tokens doit être compris entre 1 et 4096.")
         self.api_key = api_key
         self.model = model
+        self.max_output_tokens = max_output_tokens
 
-    def _openai_text(self, instruction: str, context: dict[str, Any]) -> str | None:
+    def _openai_result(
+        self, instruction: str, context: dict[str, Any]
+    ) -> _OpenAIResult:
         if not self.api_key:
-            return None
+            return _OpenAIResult(None, not_attempted_usage())
         try:
             # Import tardif : le fallback local reste disponible même sans le SDK.
             from openai import OpenAI
 
             client = OpenAI(api_key=self.api_key, timeout=20.0, max_retries=1)
+            provider_input = (
+                "Tu es un data analyst senior. Réponds en français, avec des faits "
+                "présents dans les agrégats et sans inventer de causalité. "
+                f"Instruction : {instruction}\n"
+                f"Agrégats JSON : {json.dumps(context, ensure_ascii=False)}"
+            )
+        except Exception:
+            # L'import du SDK, la construction du client ou la sérialisation ont
+            # échoué avant tout appel HTTP : ne pas compter une fausse tentative.
+            return _OpenAIResult(
+                None,
+                unavailable_usage(
+                    "provider_initialization_error", request_attempted=False
+                ),
+            )
+
+        try:
             response = client.responses.create(
                 model=self.model,
                 store=False,
-                input=(
-                    "Tu es un data analyst senior. Réponds en français, avec des faits "
-                    "présents dans les agrégats et sans inventer de causalité. "
-                    f"Instruction : {instruction}\n"
-                    f"Agrégats JSON : {json.dumps(context, ensure_ascii=False)}"
-                ),
+                max_output_tokens=self.max_output_tokens,
+                input=provider_input,
             )
             text = getattr(response, "output_text", None)
-            return text.strip() if text and text.strip() else None
+            normalized = text.strip() if text and text.strip() else None
+            usage = usage_from_response(response, self.model)
+            if normalized is None:
+                # A completed provider call can consume tokens even when its
+                # output is empty, so retain measured counters and flag only
+                # the local-response reason.
+                usage = {**usage, "fallback_reason": "empty_response"}
+            return _OpenAIResult(normalized, usage)
         except Exception:
             # Une clé invalide, un quota ou une indisponibilité réseau ne doit pas
             # casser la démonstration : le calcul local reste la source de vérité.
-            return None
+            return _OpenAIResult(None, unavailable_usage("provider_error"))
+
+    def _openai_text(self, instruction: str, context: dict[str, Any]) -> str | None:
+        """Compatibility helper returning only text for older callers/tests."""
+
+        return self._openai_result(instruction, context).text
 
     def summary(
         self,
@@ -116,7 +166,8 @@ class AIService:
         instruction = "Produis une synthèse exécutive en un court paragraphe."
         if focus:
             instruction += f" Mets l'accent sur : {focus.strip()}."
-        text = self._openai_text(instruction, context)
+        openai_result = self._openai_result(instruction, context)
+        text = openai_result.text
         mode = "openai" if text else "fallback"
         if not text:
             text = _fallback_summary(overview, quality, anomalies, focus)
@@ -125,6 +176,7 @@ class AIService:
             "recommendations": quality["recommendations"][:4],
             "mode": mode,
             "provider": "openai" if mode == "openai" else "local-fallback",
+            "usage": openai_result.usage,
             "generated_at": _now(),
         }
 
@@ -138,7 +190,10 @@ class AIService:
         """Répond à une question avec OpenAI ou des règles locales transparentes."""
 
         context = _aggregate_context(overview, quality, anomalies)
-        text = self._openai_text(f"Question utilisateur : {question}", context)
+        openai_result = self._openai_result(
+            f"Question utilisateur : {question}", context
+        )
+        text = openai_result.text
         mode = "openai" if text else "fallback"
         if not text:
             lowered = question.casefold()
@@ -206,6 +261,7 @@ class AIService:
             "answer": text,
             "mode": mode,
             "provider": "openai" if mode == "openai" else "local-fallback",
+            "usage": openai_result.usage,
             "suggestions": [
                 "Quel est le score de qualité ?",
                 "Combien de valeurs manquantes ?",

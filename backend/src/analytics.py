@@ -338,6 +338,7 @@ def build_dashboard(
     dimension: str | None = None,
     metric: str | None = None,
     aggregation: str | None = None,
+    quality_score: float | None = None,
 ) -> dict[str, Any]:
     """Construit une série agrégée contrôlée par trois paramètres explicites."""
 
@@ -362,7 +363,11 @@ def build_dashboard(
     data, chart_type, series_metadata = _aggregate(
         dataframe, selected_dimension, selected_metric, selected_aggregation
     )
-    quality_score = audit_data_quality(dataframe)["score"]
+    resolved_quality_score = (
+        audit_data_quality(dataframe)["score"]
+        if quality_score is None
+        else quality_score
+    )
     return {
         "dimension": selected_dimension,
         "metric": selected_metric,
@@ -372,7 +377,7 @@ def build_dashboard(
         "aggregation_options": list(AGGREGATIONS),
         "chart_type": chart_type,
         "data": data,
-        "kpis": _contextual_kpis(dataframe, quality_score, profiles),
+        "kpis": _contextual_kpis(dataframe, resolved_quality_score, profiles),
         **series_metadata,
     }
 

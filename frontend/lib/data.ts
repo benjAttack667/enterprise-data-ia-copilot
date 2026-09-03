@@ -97,6 +97,99 @@ export type DatasetRecovery = {
   message: string | null
 }
 
+export type AnalysisCacheMetrics = {
+  entries: number
+  max_entries: number
+  bytes?: number
+  max_bytes?: number
+  hits: number
+  misses: number
+  hit_rate: number | null
+  scope: 'process'
+}
+
+export type AiMode = 'openai' | 'fallback'
+
+export type AiProvider = 'openai' | 'local-fallback'
+
+export type AiUsageStatus = 'measured' | 'unavailable' | 'not_applicable'
+
+export type AiPricingStatus = 'estimated' | 'unavailable' | 'not_applicable'
+
+export type AiFallbackReason =
+  | 'missing_api_key'
+  | 'provider_error'
+  | 'provider_initialization_error'
+  | 'empty_response'
+  | 'usage_unavailable'
+  | null
+
+export type AiRequestUsage = {
+  status: AiUsageStatus
+  provider: 'openai' | null
+  model: string | null
+  openai_request_attempted: boolean
+  input_tokens: number | null
+  cached_input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  estimated_cost_usd: number | null
+  pricing_status: AiPricingStatus
+  pricing_source: string | null
+  fallback_reason: AiFallbackReason
+}
+
+export type AiQuotaStatus = {
+  limit: number
+  remaining: number
+  window_seconds: number
+  next_slot_after_seconds: number
+  scope: 'process'
+}
+
+export type AiUsageTotals = {
+  requests: number
+  openai_attempts: number
+  fallback_responses: number
+  input_tokens: number
+  cached_input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  estimated_cost_usd: number
+  unpriced_attempts: number
+}
+
+export type AiUsageEvent = {
+  id: number
+  operation: string
+  provider: AiProvider
+  openai_request_attempted: boolean
+  status: AiUsageStatus
+  model: string | null
+  input_tokens: number | null
+  cached_input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  estimated_cost_usd: number | null
+  pricing_status: AiPricingStatus
+  fallback_reason: AiFallbackReason
+  created_at: string
+}
+
+export type AiUsageResponse = {
+  provider?: {
+    configured: boolean
+    model: string
+  }
+  quota: AiQuotaStatus
+  totals: AiUsageTotals
+  recent: AiUsageEvent[]
+  retention: {
+    entries: number
+    max_entries: number
+  }
+}
+
 export type OverviewResponse = {
   dataset: DatasetInfo
   dataset_recovery: DatasetRecovery
@@ -112,6 +205,8 @@ export type OverviewResponse = {
   trend_series_kind?: SeriesMetadata['series_kind']
   trend_meta?: SeriesMetadata
   storage?: StorageUsage
+  analysis_cache?: AnalysisCacheMetrics
+  ai_usage?: AiUsageResponse
 }
 
 export type QualityProblem = {
@@ -180,9 +275,14 @@ export type AiResponse = {
   actions?: string[]
   recommendations?: string[]
   suggestions?: string[]
-  mode?: string
-  model?: string
-  generated_at?: string
+  mode: AiMode
+  provider: AiProvider
+  // Optional during a rolling deployment against the previous backend version.
+  usage?: AiRequestUsage
+  // Older compatible deployments can omit this field. The assistant refreshes
+  // GET /api/ai-usage after every operation to obtain the authoritative state.
+  quota?: AiQuotaStatus
+  generated_at: string
 }
 
 export type AnomaliesResponse = {
@@ -430,5 +530,9 @@ export const api = {
 
   history() {
     return request<HistoryResponse>('/api/history')
+  },
+
+  aiUsage() {
+    return request<AiUsageResponse>('/api/ai-usage')
   },
 }
