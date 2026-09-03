@@ -106,9 +106,19 @@ ${RESTORED_BACKEND_ALIAS}    robot-backend-restored
     Wait Until Element Is Enabled    xpath=//button[normalize-space()="Générer"]    30s
     Click Button    xpath=//button[normalize-space()="Générer"]
     Wait Until Page Contains    Fallback local    40s
+    Wait Until Element Contains    xpath=(//*[@data-testid="ai-response-metadata"])[1]    aucun appel OpenAI    40s
     Input Text    css:textarea    Combien de valeurs manquantes ?
     Press Keys    css:textarea    RETURN
     Wait Until Element Contains    xpath=(//*[@data-testid="assistant-message"])[last()]    2 valeur(s) manquante(s)    40s
+    Element Should Contain    xpath=(//*[@data-testid="assistant-message"])[last()]//*[@data-testid="ai-response-metadata"]    aucun appel OpenAI
+    ${assistant_count}=    Get Element Count    xpath=//*[@data-testid="assistant-message"]
+    Input Text    css:textarea    Cette question doit rester dans le champ
+    Press Keys    css:textarea    RETURN
+    Wait Until Element Contains    css:[role="alert"]    Quota global de l’assistant atteint    30s
+    Element Should Contain    css:[role="alert"]    dans environ 10 minutes
+    Textfield Value Should Be    css:textarea    Cette question doit rester dans le champ
+    ${assistant_count_after}=    Get Element Count    xpath=//*[@data-testid="assistant-message"]
+    Should Be Equal As Integers    ${assistant_count_after}    ${assistant_count}
 
 07 - Générer un rapport HTML réel
     Click Link    Rapports
@@ -126,6 +136,7 @@ ${RESTORED_BACKEND_ALIAS}    robot-backend-restored
     Element Should Contain    xpath=//tr[td[normalize-space()="report_generated"]]    Packaging Data
     Element Should Contain    xpath=//tr[td[normalize-space()="report_generated"]]    completed
     Element Should Contain    xpath=//tr[td[normalize-space()="report_generated"]]    format: html
+    Page Should Not Contain    Combien de valeurs manquantes ?
 
 09 - Rejeter un XLSX invalide sans perdre le dataset actif
     [Documentation]    Vérifie l'erreur utilisateur et l'atomicité de l'import.
@@ -299,6 +310,8 @@ Démarrer le backend Robot
     ...    env:BACKEND_SERVICE_TOKEN=${SERVICE_TOKEN}
     ...    env:API_DOCS_ENABLED=false
     ...    env:OPENAI_API_KEY=${EMPTY}
+    ...    env:AI_RATE_LIMIT_REQUESTS=2
+    ...    env:AI_RATE_LIMIT_WINDOW_SECONDS=600
     ...    env:COPILOT_UPLOADS_DIR=${RUNTIME_DIR}${/}uploads
     ...    env:COPILOT_REPORTS_DIR=${RUNTIME_DIR}${/}reports
     ...    env:COPILOT_DATABASE_PATH=${RUNTIME_DIR}${/}history.db

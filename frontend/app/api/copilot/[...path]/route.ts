@@ -21,6 +21,7 @@ const ALLOWED_BACKEND_ROUTES = new Map<string, ReadonlySet<string>>([
   ['/api/anomalies', new Set(['GET'])],
   ['/api/report', new Set(['POST'])],
   ['/api/history', new Set(['GET'])],
+  ['/api/ai-usage', new Set(['GET'])],
 ])
 
 function configuration() {

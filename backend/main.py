@@ -31,6 +31,8 @@ from starlette.concurrency import run_in_threadpool
 
 try:  # Permet ``uvicorn backend.main:app`` depuis la racine.
     from .src.ai_service import AIService
+    from .src.ai_usage import AIUsageRepository
+    from .src.analysis_cache import AnalysisCache
     from .src.analytics import build_dashboard, build_overview
     from .src.anomalies import detect_anomalies
     from .src.config import Settings
@@ -50,6 +52,8 @@ try:  # Permet ``uvicorn backend.main:app`` depuis la racine.
     from .src.security import build_service_token_dependency
 except ImportError:  # Permet aussi ``uvicorn main:app`` depuis ``backend``.
     from src.ai_service import AIService
+    from src.ai_usage import AIUsageRepository
+    from src.analysis_cache import AnalysisCache
     from src.analytics import build_dashboard, build_overview
     from src.anomalies import detect_anomalies
     from src.config import Settings
@@ -118,13 +122,93 @@ def _record(request: Request, action: str, snapshot: DatasetSnapshot, **details:
         )
 
 
-def _analysis_bundle(snapshot: DatasetSnapshot) -> tuple[dict, dict, dict]:
-    """Calcule le contexte partagé par l'IA et les rapports."""
+def _ai_quota_metadata(request: Request) -> dict[str, object]:
+    """Retourne l'état courant du quota global de l'instance."""
+
+    return {
+        **request.app.state.ai_rate_limiter.status(),
+        "scope": "process",
+    }
+
+
+def _record_ai_result(
+    request: Request,
+    operation: str,
+    snapshot: DatasetSnapshot,
+    result: dict[str, object],
+) -> None:
+    """Persiste uniquement la télémétrie, jamais le prompt ni la réponse."""
+
+    usage = result.get("usage")
+    provider = result.get("provider")
+    if not isinstance(usage, dict) or not isinstance(provider, str):
+        logger.warning("Télémétrie IA absente ou invalide pour %s.", operation)
+        return
+    try:
+        request.app.state.ai_usage.record(
+            operation=operation,
+            provider=provider,
+            usage=usage,
+        )
+    except Exception:  # La télémétrie ne doit pas invalider une réponse déjà calculée.
+        logger.warning(
+            "Échec non bloquant de l'enregistrement de la télémétrie IA.",
+            exc_info=True,
+        )
+    _record(
+        request,
+        "ai_summary_generated" if operation == "summary" else "assistant_question_answered",
+        snapshot,
+        mode=result.get("mode"),
+        provider=provider,
+    )
+
+
+def _ai_usage_payload(request: Request, recent_limit: int = 20) -> dict[str, object]:
+    """Assemble les compteurs persistés et le quota volatile de l'instance."""
+
+    payload = request.app.state.ai_usage.summary(recent_limit=recent_limit)
+    return {
+        "provider": {
+            "configured": bool(request.app.state.settings.openai_api_key),
+            "model": request.app.state.settings.openai_model,
+        },
+        **payload,
+        "quota": _ai_quota_metadata(request),
+    }
+
+
+def _compute_analysis_bundle(snapshot: DatasetSnapshot) -> tuple[dict, dict, dict]:
+    """Calcule une fois les analyses déterministes d'un dataset."""
 
     quality = audit_data_quality(snapshot.dataframe)
     anomalies = detect_anomalies(snapshot.dataframe)
     overview = build_overview(snapshot, quality=quality, anomalies=anomalies)
     return overview, quality, anomalies
+
+
+def _analysis_bundle(
+    request: Request, snapshot: DatasetSnapshot
+) -> tuple[dict, dict, dict]:
+    """Retourne une copie du bundle analytique mis en cache par dataset."""
+
+    return request.app.state.analysis_cache.get_or_compute(
+        snapshot.id,
+        "analysis_bundle",
+        lambda: _compute_analysis_bundle(snapshot),
+    )
+
+
+def _analysis_cache_metrics(request: Request) -> dict[str, object]:
+    """Expose des métriques opérationnelles sans contenu de données."""
+
+    metrics = request.app.state.analysis_cache.metrics()
+    requests = metrics["hits"] + metrics["misses"]
+    return {
+        **metrics,
+        "hit_rate": round(metrics["hits"] / requests * 100, 1) if requests else None,
+        "scope": "process",
+    }
 
 
 def _storage_metrics(request: Request) -> dict[str, dict[str, int]]:
@@ -178,8 +262,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_settings.database_path,
         max_entries=active_settings.max_history_entries,
     )
+    application.state.ai_usage = AIUsageRepository(
+        active_settings.database_path,
+        max_entries=active_settings.max_ai_usage_entries,
+    )
+    application.state.analysis_cache = AnalysisCache(
+        max_entries=active_settings.analysis_cache_max_entries,
+        max_bytes=active_settings.analysis_cache_max_bytes,
+    )
     application.state.ai = AIService(
-        active_settings.openai_api_key, active_settings.openai_model
+        active_settings.openai_api_key,
+        active_settings.openai_model,
+        max_output_tokens=active_settings.openai_max_output_tokens,
     )
     application.state.reports = ReportService(
         active_settings.reports_dir,
@@ -189,8 +283,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         active_settings.upload_rate_limit_requests,
         active_settings.upload_rate_limit_window_seconds,
     )
+    ai_rate_limiter = SlidingWindowRateLimiter(
+        active_settings.ai_rate_limit_requests,
+        active_settings.ai_rate_limit_window_seconds,
+    )
     workload_gate = threading.BoundedSemaphore(value=1)
     application.state.upload_rate_limiter = upload_rate_limiter
+    application.state.ai_rate_limiter = ai_rate_limiter
     application.state.workload_gate = workload_gate
     # Compatibility name retained for operational checks and existing clients.
     application.state.upload_gate = workload_gate
@@ -198,6 +297,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         BusinessRequestGuardMiddleware,
         settings=active_settings,
         rate_limiter=upload_rate_limiter,
+        ai_rate_limiter=ai_rate_limiter,
         workload_gate=workload_gate,
     )
     # Added last so CORS wraps early 400/401/413/429 guard responses too.
@@ -331,6 +431,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ) from exc
             except DatasetError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+            request.app.state.analysis_cache.retain_dataset(snapshot.id)
             await run_in_threadpool(
                 _record,
                 request,
@@ -374,9 +475,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Retourne les KPI et séries de la vue d'ensemble."""
 
         snapshot = _active(request)
-        payload = build_overview(snapshot)
+        payload, _, _ = _analysis_bundle(request, snapshot)
         payload["dataset_recovery"] = request.app.state.dataset_store.recovery_metadata()
         payload["storage"] = _storage_metrics(request)
+        payload["analysis_cache"] = _analysis_cache_metrics(request)
+        payload["ai_usage"] = _ai_usage_payload(request, recent_limit=5)
         return payload
 
     @protected_api.get("/api/data-quality", tags=["analytics"])
@@ -384,7 +487,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Exécute l'audit Data Quality détaillé du dataset actif."""
 
         snapshot = _active(request)
-        payload = audit_data_quality(snapshot.dataframe)
+        _, payload, _ = _analysis_bundle(request, snapshot)
         return payload
 
     @protected_api.get("/api/dashboard", tags=["analytics"])
@@ -398,11 +501,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         snapshot = _active(request)
         try:
-            payload = build_dashboard(
-                snapshot.dataframe,
-                dimension=dimension,
-                metric=metric,
-                aggregation=aggregation,
+            _, quality, _ = _analysis_bundle(request, snapshot)
+            payload = request.app.state.analysis_cache.get_or_compute(
+                snapshot.id,
+                "dashboard",
+                lambda: build_dashboard(
+                    snapshot.dataframe,
+                    dimension=dimension,
+                    metric=metric,
+                    aggregation=aggregation,
+                    quality_score=quality["score"],
+                ),
+                options={
+                    "dimension": dimension,
+                    "metric": metric,
+                    "aggregation": aggregation,
+                },
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -416,14 +530,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Génère une synthèse OpenAI ou locale à partir des agrégats."""
 
         snapshot = _active(request)
-        overview_data, quality, anomalies = _analysis_bundle(snapshot)
+        overview_data, quality, anomalies = _analysis_bundle(request, snapshot)
         result = request.app.state.ai.summary(
             overview_data,
             quality,
             anomalies,
             focus=payload.focus if payload else None,
         )
-        _record(request, "ai_summary_generated", snapshot, mode=result["mode"])
+        result["quota"] = _ai_quota_metadata(request)
+        _record_ai_result(request, "summary", snapshot, result)
         return result
 
     @protected_api.post("/api/ask", tags=["ai"])
@@ -431,11 +546,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Répond à une question sur les indicateurs calculés du dataset actif."""
 
         snapshot = _active(request)
-        overview_data, quality, anomalies = _analysis_bundle(snapshot)
+        overview_data, quality, anomalies = _analysis_bundle(request, snapshot)
         result = request.app.state.ai.ask(
             payload.question, overview_data, quality, anomalies
         )
-        _record(request, "assistant_question_answered", snapshot, mode=result["mode"])
+        result["quota"] = _ai_quota_metadata(request)
+        _record_ai_result(request, "ask", snapshot, result)
         return result
 
     @protected_api.get("/api/anomalies", tags=["analytics"])
@@ -443,7 +559,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Retourne les lignes atypiques réellement prédites par Isolation Forest."""
 
         snapshot = _active(request)
-        payload = detect_anomalies(snapshot.dataframe)
+        _, _, payload = _analysis_bundle(request, snapshot)
         return payload
 
     @protected_api.post("/api/report", tags=["reports"])
@@ -454,7 +570,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Génère et sauvegarde un rapport Markdown (défaut) ou HTML."""
 
         snapshot = _active(request)
-        overview_data, quality, anomalies = _analysis_bundle(snapshot)
+        overview_data, quality, anomalies = _analysis_bundle(request, snapshot)
         report_format = payload.format if payload else "markdown"
         try:
             result = request.app.state.reports.generate(
@@ -482,6 +598,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Liste l'historique SQLite sans créer lui-même un nouvel événement."""
 
         return {"items": request.app.state.history.list_recent(limit)}
+
+    @protected_api.get("/api/ai-usage", tags=["ai"])
+    def ai_usage(request: Request) -> dict[str, object]:
+        """Expose quota et compteurs persistés sans contenu utilisateur."""
+
+        return _ai_usage_payload(request)
 
     application.include_router(protected_api)
     return application
