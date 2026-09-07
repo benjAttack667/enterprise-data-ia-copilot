@@ -302,6 +302,8 @@ Les preuves d'exécution sont générées dans `tests/robot/results/` : `report.
 
 Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) vérifie les verrous Python universels, audite les dépendances Python et npm, exécute Pytest, TypeScript, ESLint et le build Next.js, puis valide les deux images avec un smoke test Docker Compose et les 17 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
 
+Dependabot regroupe chaque semaine les mises à jour npm mineures et correctives. Les changements npm majeurs restent volontairement manuels afin d'éviter une migration cassante automatique ; cette règle n'empêche pas les mises à jour de sécurité.
+
 ## Scénario de démonstration en entretien
 
 1. Ouvrir la vue d'ensemble sur l'échantillon Marketing Leads.
