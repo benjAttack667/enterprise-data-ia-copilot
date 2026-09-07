@@ -1,0 +1,3 @@
+# Tooling used only to regenerate and verify the universal dependency locks.
+# Keep this version explicit so the same resolver produces the committed files.
+uv==0.12.10

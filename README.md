@@ -182,6 +182,9 @@ Service backend :
 COPILOT_ENVIRONMENT=production
 BACKEND_SERVICE_TOKEN=<secret-aléatoire-partagé-avec-le-frontend>
 API_DOCS_ENABLED=false
+COPILOT_UPLOADS_DIR=/var/lib/copilot/uploads
+COPILOT_REPORTS_DIR=/var/lib/copilot/reports
+COPILOT_DATABASE_PATH=/var/lib/copilot/history.db
 ```
 
 Service frontend :
@@ -194,6 +197,10 @@ SESSION_SECRET=<autre-secret-aléatoire-de-32-octets-minimum>
 ```
 
 Utilisez une variable partagée Railway pour `BACKEND_SERVICE_TOKEN` afin d'éviter toute divergence. Le domaine public du backend peut rester disponible pour le healthcheck, mais toutes les routes métier répondent `401` sans ce jeton. `/api/health` reste public et ne divulgue aucune information sur le dataset.
+
+Attachez un volume au service backend avec le chemin de montage `/var/lib/copilot`. Sans ce volume, les fichiers importés, les rapports et SQLite utilisent le stockage éphémère du conteneur et disparaissent lors d'un remplacement de déploiement. Conservez une seule réplique tant que cette architecture repose sur SQLite et des verrous locaux.
+
+Dans **Settings > Source** des deux services, activez **Wait for CI**. Railway attendra alors la réussite du workflow GitHub Actions déclenché sur `main` avant de déployer ; un workflow en échec doit produire un déploiement ignoré. La procédure complète de validation, de contrôle post-déploiement et de rollback se trouve dans [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md).
 
 ## Routes frontend
 
@@ -249,13 +256,29 @@ Pour les anomalies, les identifiants et colonnes constantes sont exclus. Les col
 
 ```powershell
 # Depuis la racine
+& .\.venv\Scripts\python.exe -m pip install -r .\backend\requirements-dev.txt
 & .\.venv\Scripts\python.exe -m pytest .\backend\tests -q
+& .\.venv\Scripts\python.exe -m pip install pip-audit==2.10.1
+& .\.venv\Scripts\python.exe -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements.txt
 
 Set-Location .\frontend
+npm ci
+npm audit --omit=dev --audit-level=high
 npm run typecheck
 npm run lint
 npm run build
 ```
+
+Les dépendances Python maintenables sont déclarées dans `backend/requirements.in` et `backend/requirements-dev.in`. Les fichiers `requirements.txt` et `requirements-dev.txt` sont les verrous universels exacts utilisés respectivement par l'image de production et les tests. Le script de verrouillage exige une version déterministe de `uv` et conserve les marqueurs Windows/Linux :
+
+```powershell
+python -m pip install -r .\backend\requirements-tools.txt
+python .\backend\scripts\lock_dependencies.py --check
+# Après une modification des fichiers .in :
+python .\backend\scripts\lock_dependencies.py
+```
+
+Le CLI `shadcn` est une dépendance de développement : il participe au build CSS mais n'est pas installé comme dépendance runtime de l'application standalone.
 
 La suite backend utilise des répertoires et une base SQLite temporaires. Elle couvre notamment les dimensions des données, l'audit qualité, les agrégations, les types sémantiques et identifiants, les dates UTC/françaises/ambiguës, la sérialisation JSON stricte des absences, IsolationForest sur nombres textuels et valeurs extrêmes, les séparateurs CSV et champs cités, la sélection de feuille Excel, la restauration CSV/XLSX après redémarrage, l'intégrité et le rollback du manifeste, le streaming CSV/XLSX, les seuils exacts de ressources, les flux sans longueur fiable, la protection des archives Excel, les quotas import/IA, la concurrence, les erreurs de stockage `507`, les caches isolés et bornés, la tarification des tokens cachés, la télémétrie SQLite sans contenu, la rétention, l'authentification précoce du service, le démarrage fail-closed, le fallback IA et les rapports.
 
@@ -277,7 +300,7 @@ Les preuves d'exécution sont générées dans `tests/robot/results/` : `report.
 
 ### Intégration continue
 
-Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) exécute automatiquement Pytest, le contrôle TypeScript, ESLint, le build Next.js et les 17 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
+Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) vérifie les verrous Python universels, audite les dépendances Python et npm, exécute Pytest, TypeScript, ESLint et le build Next.js, puis valide les deux images avec un smoke test Docker Compose et les 17 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
 
 ## Scénario de démonstration en entretien
 

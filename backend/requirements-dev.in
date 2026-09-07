@@ -1,0 +1,8 @@
+# Backend test dependencies. Runtime requirements stay defined in requirements.in.
+# Regenerate both universal locks with:
+#   python backend/scripts/lock_dependencies.py
+
+-r requirements.in
+
+pytest>=8.3,<9.0
+httpx>=0.28,<1.0
