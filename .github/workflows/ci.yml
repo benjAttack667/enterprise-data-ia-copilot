@@ -48,10 +48,12 @@ jobs:
       - name: Run backend tests
         run: python -m pytest backend/tests -q
 
-      - name: Audit Python runtime dependencies
+      - name: Audit Python dependencies
         run: |
           python -m pip install pip-audit==2.10.1
           python -m pip_audit --strict --progress-spinner=off --requirement backend/requirements.txt
+          python -m pip_audit --strict --progress-spinner=off --requirement backend/requirements-dev.txt
+          python -m pip_audit --strict --progress-spinner=off --requirement backend/requirements-tools.txt
 
       - name: Validate Docker Compose
         run: docker compose config --quiet

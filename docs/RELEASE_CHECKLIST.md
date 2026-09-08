@@ -17,6 +17,8 @@ python .\backend\scripts\lock_dependencies.py --check
 python -m pytest .\backend\tests -q
 python -m pip install pip-audit==2.10.1
 python -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements.txt
+python -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements-dev.txt
+python -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements-tools.txt
 
 Set-Location .\frontend
 npm ci

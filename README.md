@@ -260,6 +260,8 @@ Pour les anomalies, les identifiants et colonnes constantes sont exclus. Les col
 & .\.venv\Scripts\python.exe -m pytest .\backend\tests -q
 & .\.venv\Scripts\python.exe -m pip install pip-audit==2.10.1
 & .\.venv\Scripts\python.exe -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements.txt
+& .\.venv\Scripts\python.exe -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements-dev.txt
+& .\.venv\Scripts\python.exe -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements-tools.txt
 
 Set-Location .\frontend
 npm ci

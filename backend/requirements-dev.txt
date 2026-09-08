@@ -78,7 +78,7 @@ pydantic-core==2.46.4
     # via pydantic
 pygments==2.20.0
     # via pytest
-pytest==8.4.2
+pytest==9.1.1
     # via -r backend/requirements-dev.in
 python-dateutil==2.9.0.post0
     # via pandas
