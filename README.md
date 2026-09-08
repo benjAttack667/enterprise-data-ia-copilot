@@ -308,6 +308,8 @@ Pytest s'exécute sur Python 3.10, la version minimale annoncée, tandis que l'i
 
 Dependabot regroupe chaque semaine les mises à jour npm mineures et correctives. Les changements npm majeurs restent volontairement manuels afin d'éviter une migration cassante automatique ; cette règle n'empêche pas les mises à jour de sécurité.
 
+Les verrous Python universels sont générés avec `uv` par `backend/scripts/lock_dependencies.py`. Les mises à jour de versions Python restent donc manuelles afin que Dependabot ne tente pas de les réécrire avec `pip-compile`. Les alertes de sécurité Dependabot restent actives et les trois verrous Python sont audités par `pip-audit` à chaque CI.
+
 ## Scénario de démonstration en entretien
 
 1. Ouvrir la vue d'ensemble sur l'échantillon Marketing Leads.
