@@ -10,6 +10,8 @@ Cette checklist évite qu'une version soit déployée avant la fin des contrôle
 
 ## 2. Valider localement
 
+Après toute modification d'une contrainte Python dans un fichier `requirements-*.in`, régénérer les verrous universels avec `python .\backend\scripts\lock_dependencies.py` avant de lancer les contrôles ci-dessous.
+
 ```powershell
 python -m pip install -r .\backend\requirements-dev.txt
 python -m pip install -r .\backend\requirements-tools.txt
