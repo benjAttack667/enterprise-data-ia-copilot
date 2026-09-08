@@ -260,6 +260,8 @@ Pour les anomalies, les identifiants et colonnes constantes sont exclus. Les col
 & .\.venv\Scripts\python.exe -m pytest .\backend\tests -q
 & .\.venv\Scripts\python.exe -m pip install pip-audit==2.10.1
 & .\.venv\Scripts\python.exe -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements.txt
+& .\.venv\Scripts\python.exe -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements-dev.txt
+& .\.venv\Scripts\python.exe -m pip_audit --strict --progress-spinner=off --requirement .\backend\requirements-tools.txt
 
 Set-Location .\frontend
 npm ci
@@ -301,6 +303,10 @@ Les preuves d'exécution sont générées dans `tests/robot/results/` : `report.
 ### Intégration continue
 
 Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) vérifie les verrous Python universels, audite les dépendances Python et npm, exécute Pytest, TypeScript, ESLint et le build Next.js, puis valide les deux images avec un smoke test Docker Compose et les 17 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
+
+Pytest s'exécute sur Python 3.10, la version minimale annoncée, tandis que l'image de production et le parcours navigateur couvrent Python 3.12.
+
+Dependabot regroupe chaque semaine les mises à jour npm mineures et correctives. Les changements npm majeurs restent volontairement manuels afin d'éviter une migration cassante automatique ; cette règle n'empêche pas les mises à jour de sécurité.
 
 ## Scénario de démonstration en entretien
 
