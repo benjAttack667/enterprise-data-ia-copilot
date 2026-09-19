@@ -24,7 +24,7 @@ python -m pip_audit --strict --progress-spinner=off --requirement .\backend\requ
 
 Set-Location .\frontend
 npm ci
-npm audit --omit=dev --audit-level=high
+npm audit --audit-level=moderate
 npm run typecheck
 npm run lint
 npm run build
@@ -41,7 +41,7 @@ Le parcours Robot Framework complet reste exécuté par GitHub Actions. Il peut 
 La branche `main` doit exiger la réussite des contrôles suivants avant fusion :
 
 - `Backend · Pytest`, qui inclut l'audit du verrou Python runtime ;
-- `Frontend · TypeScript, ESLint, build`, qui inclut l'audit npm de production ;
+- `Frontend · TypeScript, ESLint, build`, qui inclut l'audit npm des dépendances de production et de développement ;
 - `Containers · Docker Compose smoke` ;
 - `E2E · Robot Framework`.
 
