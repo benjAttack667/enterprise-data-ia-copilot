@@ -81,8 +81,8 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Audit frontend production dependencies
-        run: npm audit --omit=dev --audit-level=high
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=moderate
 
       - name: Check TypeScript
         run: npm run typecheck

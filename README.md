@@ -265,7 +265,7 @@ Pour les anomalies, les identifiants et colonnes constantes sont exclus. Les col
 
 Set-Location .\frontend
 npm ci
-npm audit --omit=dev --audit-level=high
+npm audit --audit-level=moderate
 npm run typecheck
 npm run lint
 npm run build
