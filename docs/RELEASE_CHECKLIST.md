@@ -42,7 +42,7 @@ La branche `main` doit exiger la réussite des contrôles suivants avant fusion 
 
 - `Backend · Pytest`, qui inclut l'audit du verrou Python runtime ;
 - `Frontend · TypeScript, ESLint, build`, qui inclut l'audit npm des dépendances de production et de développement ;
-- `Containers · Docker Compose smoke` ;
+- `Containers · Docker Compose smoke`, qui inclut un parcours Chrome contre le bundle Next.js `standalone` et le contrôle de sa console ;
 - `E2E · Robot Framework`.
 
 Une fusion ne doit être effectuée que lorsque la pull request est à jour et que tous ces contrôles sont verts.

@@ -300,9 +300,47 @@ python -m robot --outputdir .\tests\robot\results .\tests\robot\enterprise_data_
 
 Les preuves d'exécution sont générées dans `tests/robot/results/` : `report.html`, `log.html`, `output.xml`, journaux FastAPI/Next.js et captures automatiques en cas d'échec.
 
+Une seconde suite courte contrôle le vrai bundle `standalone` servi par les images Docker. Elle vérifie la connexion, l'import CSV, la navigation, un rechargement direct du dashboard, l'historique navigateur, la déconnexion et l'absence d'erreurs JavaScript ou d'hydratation dans la console Chrome. Elle est lancée automatiquement par la CI lorsque la stack Docker Compose est prête. Pour l'exécuter localement sans modifier le volume ou l'historique de démonstration habituel, utilisez un projet Compose isolé :
+
+Les quatre scénarios constituent un parcours ordonné et doivent être lancés ensemble.
+
+```powershell
+# Depuis la racine du projet ; ces secrets sont temporaires et uniquement locaux.
+$env:COPILOT_ENVIRONMENT = "production"
+$env:BACKEND_SERVICE_TOKEN = "robot-production-backend-token-at-least-32-bytes"
+$env:DEMO_ACCESS_PASSWORD = "RobotProductionPassword!2026"
+$env:SESSION_SECRET = "robot-production-session-secret-at-least-32-bytes"
+$env:FRONTEND_ORIGINS = "http://localhost:3100"
+$env:BACKEND_PORT = "8100"
+$env:FRONTEND_PORT = "3100"
+$env:PRODUCTION_FRONTEND_URL = "http://localhost:3100"
+
+# Ce nettoyage vise uniquement une éventuelle ancienne stack de test portant ce nom.
+docker compose -p copilot-production-smoke down --volumes --remove-orphans
+try {
+    docker compose -p copilot-production-smoke up --build --detach --wait
+    if ($LASTEXITCODE -ne 0) { throw "La stack de test n'a pas démarré." }
+    python -m robot --outputdir .\tests\robot\results\production .\tests\robot\production_smoke.robot
+    if ($LASTEXITCODE -ne 0) { throw "Le parcours Chrome de production a échoué." }
+}
+finally {
+    docker compose -p copilot-production-smoke down --volumes --remove-orphans
+    @(
+        "COPILOT_ENVIRONMENT",
+        "BACKEND_SERVICE_TOKEN",
+        "DEMO_ACCESS_PASSWORD",
+        "SESSION_SECRET",
+        "FRONTEND_ORIGINS",
+        "BACKEND_PORT",
+        "FRONTEND_PORT",
+        "PRODUCTION_FRONTEND_URL"
+    ) | ForEach-Object { Remove-Item "Env:$_" -ErrorAction SilentlyContinue }
+}
+```
+
 ### Intégration continue
 
-Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) vérifie les verrous Python universels, audite les dépendances Python et npm, exécute Pytest, TypeScript, ESLint et le build Next.js, puis valide les deux images avec un smoke test Docker Compose et les 17 scénarios Robot Framework. Les rapports E2E sont conservés comme artefact de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
+Le workflow GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) vérifie les verrous Python universels, audite les dépendances Python et npm, exécute Pytest, TypeScript, ESLint et le build Next.js, puis valide les deux images avec un smoke test Docker Compose, 4 scénarios Chrome contre le bundle de production et les 17 scénarios Robot Framework complets. Les deux rapports E2E sont conservés comme artefacts de CI pendant 14 jours, y compris lorsqu'un scénario échoue.
 
 Pytest s'exécute sur Python 3.10, la version minimale annoncée, tandis que l'image de production et le parcours navigateur couvrent Python 3.12.
 
